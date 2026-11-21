@@ -4,14 +4,14 @@ Start by installing the dependencies in [System Requirements](/docs/building.md#
 
 ## System Requirements
 
-* Java 17 or newer (we recommend [OpenJDK](https://adoptium.net/))
+* Java 21 or newer (we recommend [OpenJDK](https://adoptium.net/)). Set `JAVA_HOME` to this JDK; the build and server reject older JVMs.
 * Latest [Leiningen](https://leiningen.org/)
 * Latest supported [nodejs](https://nodejs.org/). You can check your version using `node -v`. We recommend installing node using [nvm](https://github.com/creationix/nvm)
 * Latest supported [npm](https://www.npmjs.com/)
 
 ## Download NPM dependencies
 
-    npm install
+    npm ci
 
 ## Quickstart
 
@@ -24,6 +24,7 @@ These commands are explained in more depth below, but if you know what you want,
 
     lein format      # run cljfmt to fix code indentation
     lein kaocha      # run unit tests
+    lein test-backend # run backend tests without a browser
     npx cypress run  # run cypress ui tests
 
 ## Running a dev environment
@@ -62,6 +63,10 @@ By default, the web server will be started on http://localhost:5000/. To change 
 ## Running tests
 
 ### Unit tests
+
+Backend tests run on Java 21 without a browser:
+
+    lein test-backend
 
 You can run the ClojureScript unit tests by invoking the test runner kaocha.
 

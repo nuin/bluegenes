@@ -1,3 +1,5 @@
+(load-file "script/bluegenes/java_runtime.clj")
+
 (def version
   "This is Git release tag like 'v0.10.0-5-gb2dae83e'."
   (-> (clojure.java.shell/sh "git" "describe" "--always")
@@ -136,6 +138,7 @@
                "deploy" ["with-profile" "+uberjar" "deploy" "clojars"]
                "format" ["cljfmt" "fix"]
                "kaocha" ["with-profile" "kaocha" "run" "-m" "kaocha.runner"]
+               "test-backend" ["with-profile" "+backend-test" "test"]
                "tools" ["run" "-m" "bluegenes-tool-store.tools"]
                "less" ["do" "assets,"
                        (into ["shell"] watch-less)]})
@@ -169,6 +172,7 @@
                    :env {:development true}}
              :kaocha {:dependencies [[lambdaisland/kaocha "1.0.700"]
                                      [lambdaisland/kaocha-cljs "0.0-71"]]}
+             :backend-test {:test-paths ^:replace ["test/clj"]}
              :repl {:source-paths ["dev"]}
              :prod {:resource-paths ^:replace ["config/prod" "config/defaults" "resources"]}
              :uberjar {:resource-paths ^:replace ["config/defaults" "resources"]

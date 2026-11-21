@@ -34,6 +34,7 @@ jobs:
         - v1-deps-{{ .Branch }}
         - v1-deps
     - run: lein cljfmt check
+    - run: lein test-backend
     - run: npm ci
     - save_cache:
         key: v1-deps-{{ .Branch }}-{{ checksum "package.json" }}
@@ -50,10 +51,10 @@ jobs:
     resource_class: large
     steps:
     - run: sudo apt-get update -y
-    - run: sudo apt-get install -y openjdk-17-jdk-headless leiningen
+    - run: sudo apt-get install -y openjdk-21-jdk-headless leiningen
     ## Cypress 6 (Electron) runtime libraries; libgconf-2-4 no longer exists on 22.04.
     - run: sudo apt-get install -y libgtk2.0-0 libgtk-3-0 libgbm-dev libnotify-dev libnss3 libxss1 libasound2 libxtst6 xauth xvfb
-    - run: sudo update-java-alternatives --set java-1.17.0-openjdk-amd64 || true
+    - run: sudo update-java-alternatives --set java-1.21.0-openjdk-amd64
     - run: java -version
     - run: python3 --version
     ## intermine-boot imports pkg_resources, removed from setuptools 81.

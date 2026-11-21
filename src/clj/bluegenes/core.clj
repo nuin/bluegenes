@@ -1,5 +1,6 @@
 (ns bluegenes.core
-  (:require [bluegenes.handler :refer [handler]]
+  (:require [bluegenes.java-runtime]
+            [bluegenes.handler :refer [handler]]
             [config.core :refer [env]]
             [ring.adapter.jetty :refer [run-jetty]]
             [taoensso.timbre :as timbre :refer [infof]]
