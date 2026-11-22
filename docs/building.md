@@ -29,6 +29,26 @@ These commands are explained in more depth below, but if you know what you want,
 
 ## Running a dev environment
 
+### InterMine 6 on Java 21
+
+Build the production assets, then run the local InterMine 6 profile:
+
+    npm ci
+    lein build
+    lein intermine6
+
+Open `http://localhost:5000/bluegenes/intermine6`. The profile expects an already
+running InterMine 6 at `http://localhost:8080/intermine-demo`; it does not create,
+reset or load any databases. Override the public root with
+`BLUEGENES_DEFAULT_SERVICE_ROOT` and, when the backend uses a different network,
+set `BLUEGENES_BACKEND_SERVICE_ROOT` to its reachable root. Both must identify the
+same mine. Roots exclude the `/service` suffix. This local profile has no additional
+mines; the default Alliance profile and its configured mines are unchanged.
+
+Use disposable test accounts and lists when checking login and list operations.
+The core InterMine test model covers generic API behavior; biological report/tool
+validation additionally requires a genomic mine and data.
+
 You can start a complete developer environment with automatic compilation of Less CSS and hot-reloading of code changes by running:
 
     lein dev
@@ -68,6 +88,15 @@ Backend tests run on Java 21 without a browser:
 
     lein test-backend
 
+For unattended ClojureScript tests, use the pinned Chromium runner (Node 22+):
+
+    npm ci --prefix test/browser
+    test/browser/node_modules/.bin/playwright install chromium
+    npm run test:cljs --prefix test/browser
+
+Pass `-- --focus cljs:bluegenes.lists-test` to focus a namespace. The runner reserves
+local port 9016, starts Kaocha and Chromium, propagates failures, and stops both.
+
 You can run the ClojureScript unit tests by invoking the test runner kaocha.
 
     lein kaocha
@@ -101,6 +130,18 @@ Cypress also has a really useful interface for debugging failing tests:
 # Production Builds
 
 ## Testing a minified instance before deploying:
+
+With the InterMine 6 profile and its disposable core test fixture running, verify
+the public APIs, account/list lifecycle and production browser navigation:
+
+    TESTMODEL_URL=http://localhost:8080/intermine-demo BLUEGENES_URL=http://localhost:5000/bluegenes node --test test/integration/intermine6.test.cjs
+    TESTMODEL_URL=http://localhost:8080/intermine-demo BLUEGENES_URL=http://localhost:5000/bluegenes npm test --prefix test/browser
+
+These account tests create and delete their own users and lists. Do not point them
+at a production mine. GitHub Actions runs them against the pinned InterMine 6 source
+revision in a fresh PostgreSQL 18/Solr 10 fixture. The existing CircleCI Biotestmine
+job remains a separate older-server compatibility check; it does not establish
+InterMine 6 compatibility.
 
 Most of the time, we develop with uncompressed files since it's faster for hot reloads. But for production, we want things to be extra fast on load and we don't hot-reload changes, so it's better to present minified files that have had all un-necessary code stripped. Clojure uses Google Closure tools (yes, Clojure uses Closure) to minify things.
 

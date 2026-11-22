@@ -1,0 +1,12 @@
+{:server-port 5000
+ :logging-level "info"
+ :google-analytics nil
+ :bluegenes-tool-path "./tools"
+ :bluegenes-deploy-path "/bluegenes"
+ :bluegenes-alliance-api-base "https://www.alliancegenome.org/api"
+ :bluegenes-backend-service-root nil
+ :bluegenes-default-service-root "http://localhost:8080/intermine-demo"
+ :bluegenes-default-mine-name "InterMine 6"
+ :bluegenes-default-namespace "intermine6"
+ :bluegenes-additional-mines []
+ :hide-registry-mines true}

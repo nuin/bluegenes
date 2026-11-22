@@ -11,8 +11,11 @@
 /cypress/videos
 /cypress/results
 /cypress/downloads
+/test/browser/test-results/
+/test/browser/playwright-report/
 config/**/*.edn
 !config/defaults/config.edn
+!config/intermine6/config.edn
 .lein-failures
 out
 .idea

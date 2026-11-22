@@ -138,10 +138,10 @@
    (rf/reg-sub ::warnings
                (fn [db]
                  (filter #(= "warning" (:style %)) (vals (:messages db)))))
-   (rf/dispatch-sync [:test/set-mine])
-   (rf/dispatch-sync [:assets/failure :assets/fetch-lists])
-   (rf/dispatch-sync [:assets/failure :assets/fetch-templates])
-   (rf/dispatch-sync [:assets/failure :assets/fetch-templates])
+   (rf/dispatch [:test/set-mine])
+   (rf/dispatch [:assets/failure :assets/fetch-lists])
+   (rf/dispatch [:assets/failure :assets/fetch-templates])
+   (rf/dispatch [:assets/failure :assets/fetch-templates])
    (let [warnings @(rf/subscribe [::warnings])
          text (pr-str (:markup (first warnings)))]
      (testing "exactly one warning for the mine"
@@ -151,13 +151,15 @@
 
 (deftest reboot-clears-assets-failure-warning
   (run-test-sync
+   (rf/reg-event-fx :authentication/init (fn [] {}))
    (rf/reg-event-db :test/set-mine
                     (fn [db _] (assoc db :current-mine :test-mine
                                       :mines {:test-mine {:name "TestMine"}})))
    (rf/reg-sub ::message-ids (fn [db] (set (keys (:messages db)))))
-   (rf/dispatch-sync [:test/set-mine])
-   (rf/dispatch-sync [:assets/failure :assets/fetch-lists])
-   (rf/dispatch-sync [:messages/add {:id :other :markup [:span "x"] :style "info" :timeout 0}])
-   (rf/dispatch-sync [:reboot])
+   (rf/dispatch [:test/set-mine])
+   (rf/dispatch [:assets/failure :assets/fetch-lists])
+   (rf/dispatch [:messages/add {:id :other :markup [:span "x"] :style "info" :timeout 0}])
+   (is (= #{:other :assets-failure/test-mine} @(rf/subscribe [::message-ids])))
+   (rf/dispatch [:reboot])
    (testing "reboot removes the assets-failure warning and keeps other messages"
      (is (= #{:other} @(rf/subscribe [::message-ids]))))))

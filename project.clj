@@ -135,6 +135,7 @@
                               ["with-profile" "biotestmine" "run"]]
                "testmine" ["do" "build,"
                            ["with-profile" "testmine" "run"]]
+               "intermine6" ["with-profile" "intermine6" "run"]
                "deploy" ["with-profile" "+uberjar" "deploy" "clojars"]
                "format" ["cljfmt" "fix"]
                "kaocha" ["with-profile" "kaocha" "run" "-m" "kaocha.runner"]
@@ -175,6 +176,7 @@
              :backend-test {:test-paths ^:replace ["test/clj"]}
              :repl {:source-paths ["dev"]}
              :prod {:resource-paths ^:replace ["config/prod" "config/defaults" "resources"]}
+             :intermine6 {:resource-paths ^:replace ["config/intermine6" "config/defaults" "resources"]}
              :uberjar {:resource-paths ^:replace ["config/defaults" "resources"]
                        :prep-tasks ["build" "compile"]
                        :aot :all}

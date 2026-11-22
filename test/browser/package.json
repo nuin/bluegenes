@@ -1,0 +1,12 @@
+{
+  "name": "bluegenes-browser-tests",
+  "private": true,
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "test": "playwright test",
+    "test:cljs": "node run-cljs.cjs"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.65.1"
+  }
+}

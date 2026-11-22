@@ -5,6 +5,7 @@
             [day8.re-frame.test :refer-macros [run-test-sync run-test-async wait-for]]
             [imcljs.fetch :as fetch]
             [imcljs.save :as save]
+            [bluegenes.events]
             [bluegenes.subs]
             [bluegenes.pages.results.events]
             [bluegenes.pages.results.subs]
@@ -228,7 +229,7 @@
      (swap! utils/stubbed-variables conj #(set! fetch/lists orig-lists))
      (swap! utils/stubbed-variables conj #(set! save/im-list-from-query orig-save))
      (rf/dispatch [::stm/save])
-     (wait-for [::stm/save-success]
+     (wait-for [:messages/add]
        (testing "list is saved in the target mine with its token"
          (is (= {:root "http://mouse.example" :token "t"} @saved-service)))
        (testing "name clash in the target mine gets a suffix"

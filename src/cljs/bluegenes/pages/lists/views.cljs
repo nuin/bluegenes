@@ -153,28 +153,35 @@
 (def list-time-formatter (time-format/formatters :mysql))
 (def list-date-formatter (time-format/formatter "dd MMM, Y"))
 
+(defn- valid-timestamp? [ts]
+  (and (number? ts) (js/Number.isFinite (.getTime (js/Date. ts)))))
+
 (let [minute 60000
       hour 3.6e+6
       day 8.64e+7]
   (defn pretty-timestamp [ts]
-    (let [now (.getTime (js/Date.))
-          ago (- now ts)
-          today (.getTime (Date.)) ; Uses goog.date.Date for midnight time.
-          yesterday (- today day)]
-      (cond
-        (< ago minute) "Just now"
-        (< ago hour) (let [amount (quot ago minute)]
-                       (str amount " min" (when (> amount 1) "s") " ago"))
-        (>= ts today) (let [amount (quot ago hour)]
-                        (str amount " hour" (when (> amount 1) "s") " ago"))
-        (>= ts yesterday) "Yesterday"
-        :else (time-format/unparse list-date-formatter
-                                   (time-coerce/from-long ts))))))
+    (if-not (valid-timestamp? ts)
+      "Date unavailable"
+      (let [now (.getTime (js/Date.))
+            ago (- now ts)
+            today (.getTime (Date.)) ; Uses goog.date.Date for midnight time.
+            yesterday (- today day)]
+        (cond
+          (< ago minute) "Just now"
+          (< ago hour) (let [amount (quot ago minute)]
+                         (str amount " min" (when (> amount 1) "s") " ago"))
+          (>= ts today) (let [amount (quot ago hour)]
+                          (str amount " hour" (when (> amount 1) "s") " ago"))
+          (>= ts yesterday) "Yesterday"
+          :else (time-format/unparse list-date-formatter
+                                     (time-coerce/from-long ts)))))))
 
 (defn readable-time [ts]
-  [poppable {:data (time-format/unparse list-time-formatter
-                                        (time-coerce/from-long ts))
-             :children (pretty-timestamp ts)}])
+  (if (valid-timestamp? ts)
+    [poppable {:data (time-format/unparse list-time-formatter
+                                          (time-coerce/from-long ts))
+               :children (pretty-timestamp ts)}]
+    [:span "Date unavailable"]))
 
 (defn sort-button [column]
   (let [active-sort @(subscribe [:lists/sort])]
