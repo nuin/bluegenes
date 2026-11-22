@@ -4,7 +4,7 @@
   "description": "Tabs of a gene's alleles, disease models and paralogs, for Gene report pages and list pages.",
   "main": "dist/bundle.js",
   "scripts": {
-    "test": "node --test test/"
+    "test": "node --test test/*.test.js"
   },
   "keywords": ["bluegenes-intermine-tool"],
   "license": "MIT",

@@ -1,4 +1,6 @@
 const { test, expect } = require('@playwright/test');
+const { randomUUID } = require('node:crypto');
+const { api, withAccount } = require('../fixtures/intermine.cjs');
 
 if (!process.env.BLUEGENES_URL) throw new Error('BLUEGENES_URL must include the deployment prefix');
 if (!process.env.TESTMODEL_URL) throw new Error('TESTMODEL_URL must identify the paired InterMine fixture');
@@ -33,4 +35,31 @@ test('production UI boots and navigates through the configured mine', async ({ p
   await page.goto(`${root}/intermine6/report/Employee/${results[0][0]}`);
   await expect(page.getByRole('main').getByRole('heading', { name: 'Neil GodwinEmployee', exact: true, level: 1 })).toBeVisible();
   expect(errors).toEqual([]);
+});
+
+test('browser login reveals private lists and logout removes access', async ({ page }) => {
+  await withAccount(async (identity, credentials) => {
+    const name = `browser-private-${randomUUID()}`;
+    await api('lists', identity.token, {
+      method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: '"David Brent"',
+    }, { name, type: 'Employee' });
+    await page.goto(`${root}/intermine6/lists`);
+    const navigation = page.getByRole('navigation');
+    await expect(page.getByRole('link', { name, exact: true })).toHaveCount(0);
+    await navigation.getByRole('button', { name: 'Login', exact: true }).click();
+    const form = page.locator('form.login-form');
+    await form.locator('#email').fill(credentials.username);
+    await form.locator('input[type="password"]').fill(credentials.password);
+    await form.getByRole('button', { name: 'Login', exact: true }).click();
+    await expect(page.getByRole('link', { name, exact: true })).toBeVisible();
+    await page.reload();
+    await expect(page.getByRole('link', { name, exact: true })).toBeVisible();
+    await navigation.locator('.logon.success .dropdown-toggle').click();
+    await navigation.getByText('Logout', { exact: true }).click();
+    await expect(navigation.getByRole('button', { name: 'Login', exact: true })).toBeVisible();
+    await expect(page.getByRole('link', { name, exact: true })).toHaveCount(0);
+    await page.reload();
+    await expect(navigation.getByRole('button', { name: 'Login', exact: true })).toBeVisible();
+    await expect(page.getByRole('link', { name, exact: true })).toHaveCount(0);
+  });
 });

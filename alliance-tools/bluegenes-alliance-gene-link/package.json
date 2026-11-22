@@ -4,7 +4,7 @@
   "description": "Links a Gene report page to the gene's page on alliancegenome.org.",
   "main": "dist/bundle.js",
   "scripts": {
-    "test": "node --test test/"
+    "test": "node --test test/*.test.js"
   },
   "keywords": ["bluegenes-intermine-tool"],
   "license": "MIT",
