@@ -24,13 +24,10 @@ test('production UI boots and navigates through the configured mine', async ({ p
   await expect(page).toHaveURL(`${root}/intermine6/querybuilder`);
   await expect(page.getByRole('main')).toContainText('Employee');
   const employee = await page.request.get(`${mine}/service/query/results`, {
-    params: { format: 'json', query: JSON.stringify({
-      model: { name: 'testmodel' },
-      select: ['Employee.id'],
-      where: [{ path: 'Employee.name', op: '=', value: 'Neil Godwin' }],
-    }) },
+    params: { format: 'json', query: '<query model="testmodel" view="Employee.id">'
+      + '<constraint path="Employee.name" op="=" value="Neil Godwin"/></query>' },
   });
-  expect(employee.ok()).toBeTruthy();
+  expect(employee.status()).toBe(200);
   const { results } = await employee.json();
   expect(results).toHaveLength(1);
   await page.goto(`${root}/intermine6/report/Employee/${results[0][0]}`);
