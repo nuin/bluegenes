@@ -6,6 +6,7 @@
             [ring.middleware.params :refer [wrap-params]]
             [ring.middleware.keyword-params :refer [wrap-keyword-params]]
             [bluegenes.ws.auth :as auth]
+            [bluegenes.auth.transactions :as transactions]
             [bluegenes.ws.ids :as ids]
             [bluegenes.ws.rss :as rss]
             [bluegenes.ws.lookup :as lookup]
@@ -18,16 +19,20 @@
             [clojure.string :as str]))
 
 (defn with-init
-  "One of BlueGenes' web service could have added some data we want passed on
-  to the frontend to session.init, in which case we make sure to pass it on
-  and remove it (as it gets 'consumed') from the session."
-  [options {{:keys [init] :as session} :session}]
-  (-> (response (index init options))
-      (response/content-type "text/html")
-      ;; This is very important - without it Firefox will request the HTML
-      ;; twice, messing up session.init!
-      (response/charset "utf-8")
-      (assoc :session (dissoc session :init))))
+  "Deliver credentials through the live authentication context, once."
+  [options {{:keys [init]} :session :as request}]
+  (let [context (transactions/existing-context request)
+        init (dissoc init :identity :renamedLists :auth-request)
+        html (if context
+               (transactions/render-init! context request #(index (merge init %) options))
+               (index init options))]
+    (cond-> (-> (response html)
+                (response/content-type "text/html")
+                (response/charset "utf-8")
+                (assoc-in [:headers "Cache-Control"] "no-store"))
+      (or context (seq (:session request)))
+      (assoc :session (dissoc (if context (transactions/session request context)
+                                  (:session request)) :init)))))
 
 (defn favicon-fallback []
   (found (str (:bluegenes-deploy-path env) "/favicon-fallback.ico")))

@@ -1,189 +1,159 @@
 (ns bluegenes.ws.auth
   (:require [compojure.core :refer [POST defroutes GET]]
             [imcljs.auth :as im-auth]
-            [cheshire.core :as cheshire]
             [ring.util.http-response :as response]
-            [taoensso.timbre :as timbre]
             [ring.middleware.params :refer [wrap-params]]
             [ring.middleware.keyword-params :refer [wrap-keyword-params]]
             [config.core :refer [env]]
-            [bluegenes.utils :refer [env->mines]]))
+            [clojure.string :as str]
+            [clj-http.client :as http]
+            [bluegenes.auth.intermine :as mine]
+            [bluegenes.auth.transactions :as transactions]
+            [bluegenes.utils :as utils :refer [env->mines]])
+  (:import [java.net URI URLEncoder]
+           [java.nio.charset StandardCharsets]))
 
-;; You may notice that we keep session data on the backend, although this data
-;; is currently not used (except for OAuth 2.0, which only depends on the
-;; session data added in `oauth2authenticator`). This is because the frontend
-;; does most of the requests by itself. There are some trade-offs with this:
-;;
-;; - For most requests, an OPTIONS preflight request has to be sent prior to
-;; the actual request, incurring a performance penalty (hopefully the majority
-;; of BlueGenes instances will be hosted on the same domain as the InterMine
-;; instances they'll use the most, avoiding the preflight request)
-;;
-;; - The auth data stored to localStorage can be read by nefarious JS code that
-;; sneaks in (XSS; one such path is by installing a malicious BlueGenes tool)
-;;
-;; The obvious alternative would be to only have the BlueGenes backend handle
-;; authentication by using sessions. However, this would mean that all requests
-;; would have to be proxied by the backend, (essentially adding a detour to
-;; every request) another big performance penalty (although this would avoid
-;; preflight requests completely).
-;;
-;; The optimal solution would be to have each InterMine instance handle
-;; sessions themselves, not requiring that BlueGenes keep any authentication
-;; data. Was this approach tried before and deemed too difficult? Or was the
-;; "client manages token" approach chosen by default for historical reasons, as
-;; each API client has been doing this. At some point we might raise this
-;; question again...
-;; ^ not possible right now; JSESSIONID only works for JSP webapp, not WS requests
-;; => Keep it as it is!
+(defn use-backend-service [service]
+  (let [{default :bluegenes-default-service-root backend :bluegenes-backend-service-root} env]
+    (if (and (not-empty backend) (= (:root service) default))
+      (assoc service :root backend)
+      service)))
 
-(defn use-backend-service
-  "Substitute service root for the one the backend is configured to use, if it
-  is so configured and matches the equivalent service root for the frontend.
-  The latter check is required as we could be connecting to an external mine."
-  [service]
-  (let [{default :bluegenes-default-service-root
-         backend :bluegenes-backend-service-root} env
-        backend (not-empty backend)]
-    (cond
-      (nil? backend) service
-      (= (:root service) default) (assoc service :root backend)
-      :else service)))
+(defn- single-value? [value limit]
+  (and (string? value) (not (str/blank? value)) (<= (count value) limit)))
 
-(defn- configured-roots
-  "Service roots of the mines in config. The frontend sends the default service
-  root, which `env->mines` replaces with the backend root when one is set."
-  []
-  (-> (set (map :root (env->mines env)))
-      (conj (:bluegenes-default-service-root env))))
+(defn- invalid-request []
+  (ex-info "Authentication parameters do not match a configured mine" {:status 400}))
 
-(defn- wrap-configured-service
-  "Reject requests whose service root is not one of the configured mines, so the
-  backend only sends credentials and tokens to those InterMine instances."
-  [handler]
-  (fn [{{:keys [service]} :params :as req}]
-    (if (contains? (configured-roots) (:root service))
-      (handler req)
-      (response/bad-request {:error "Service root is not a configured mine"}))))
+(defn configured-mine [{:keys [service mine-id]}]
+  (let [mines (filter #(and (single-value? (:root %) 2048)
+                            (single-value? (:namespace %) 128))
+                      (env->mines (dissoc env :bluegenes-backend-service-root)))
+        matches (filter #(and (= (:root service) (:root %))
+                              (or (nil? mine-id) (= mine-id (:namespace %)))) mines)
+        selected (when (= 1 (count matches)) (first matches))]
+    (when-not (and selected (or (nil? (:token service)) (single-value? (:token service) 1024)))
+      (throw (invalid-request)))
+    {:mine-id (:namespace selected)
+     :mine-path (str (:bluegenes-deploy-path env) "/" (:namespace selected))
+     :public-root (:root selected)
+     :service (use-backend-service (select-keys service [:root :token]))}))
 
-(defn- mine-path
-  "Path to redirect to for a mine, using the default namespace when the mine is
-  not configured."
-  [mine-id]
-  (let [namespaces (set (map :namespace (env->mines env)))]
-    (str (:bluegenes-deploy-path env) "/"
-         (if (contains? namespaces mine-id)
-           mine-id
-           (:bluegenes-default-namespace env)))))
+(defn public-callback [provider]
+  (try
+    (let [value (:bluegenes-public-url env)
+          uri (URI. value)
+          path (str/replace (or (.getPath uri) "") #"/+$" "")
+          deploy (str/replace (or (:bluegenes-deploy-path env) "") #"/+$" "")
+          loopback? (#{"localhost" "127.0.0.1" "::1" "[::1]"} (some-> (.getHost uri) str/lower-case))]
+      (when-not (and (.getHost uri) (nil? (.getUserInfo uri)) (nil? (.getRawQuery uri))
+                     (nil? (.getFragment uri)) (= path deploy)
+                     (<= -1 (.getPort uri) 65535)
+                     (or (= "https" (.getScheme uri)) (and loopback? (= "http" (.getScheme uri)))))
+        (throw (IllegalArgumentException.)))
+      (str (str/replace value #"/+$" "") "/api/auth/oauth2callback?provider="
+           (URLEncoder/encode provider StandardCharsets/UTF_8)))
+    (catch Exception _
+      (throw (ex-info "Set BLUEGENES_PUBLIC_URL to the HTTPS application URL, including its deployment path. HTTP is allowed only on loopback."
+                      {:status 400 :kind :configuration})))))
 
-(defn logout
-  "Log the user out by clearing the session. Also sends a request to the InterMine
-  instance to invalidate the token."
-  [{{:keys [service]} :params :as _req}]
-  (let [service (use-backend-service service)]
-    (try
-      ;; Might throw if we're missing token (401) or if the InterMine instance
-      ;; is older and doesn't have the service implemented (invalid response).
-      (im-auth/logout service)
-      (-> (response/ok {:success true})
-          (assoc :session nil))
-      (catch Exception _
-        (-> (response/ok {:success true})
-            (assoc :session nil))))))
+(defn secure-cookie? []
+  (str/starts-with? (or (:bluegenes-public-url env) "") "https://"))
 
 (defn login
-  "Login using the new login service, with fallback to basic auth."
+  "Keep the explicit older-server 302/basic-auth compatibility path."
   [service username password]
   (let [res (im-auth/login service username password)]
     (if (= (:status res) 302)
-      ;; The InterMine instance doesn't support the new login service.
-      ;; Fall back to basic auth.
       (let [token (im-auth/basic-auth service username password)
             user (im-auth/who-am-i? (assoc service :token token) token)]
         [(assoc user :token token)])
       (let [{:keys [renamedLists user token]} (:output res)]
         [(assoc user :token token) renamedLists]))))
 
-(defn handle-auth
-  "Ring handler for handling authentication. Attempts to authenticate with the
-  IM server (via web services) by fetching a token. If successful, return
-  the token and store it in the session."
-  [{{:keys [username password service]} :params :as _req}]
-  (let [service (use-backend-service service)]
-    (try
-      (let [[user+token renamedLists] (login service username password)]
-        (-> (response/ok {:identity user+token
-                          :renamedLists renamedLists})
-            (assoc :session ^:recreate {:identity user+token})))
-      (catch Exception e
-        (let [{:keys [status] :as res} (ex-data e)]
-          (if status
-            res
-            (response/internal-server-error {:error (ex-message e)})))))))
+(defn- account-response [request register?]
+  (let [{:keys [username password] :as params} (:params request)
+        {:keys [service]} (configured-mine params)
+        context (transactions/context! request)]
+    (when-not (and (single-value? username 320) (single-value? password 4096))
+      (throw (ex-info "Enter an email address and password" {:status 400})))
+    (locking (:lock context)
+      (transactions/invalidate! context)
+      (http/with-middleware [#'http/wrap-request #'utils/wrap-timeout]
+        (when register? (im-auth/register service username password))
+        (let [[identity renamed] (login service username password)]
+          (when-not (single-value? (:token identity) 4096)
+            (throw (ex-info "The mine did not return credentials" {:status 502})))
+          (-> (response/ok {:identity identity :renamedLists renamed})
+              (assoc :session (with-meta (transactions/session request context) {:recreate true}))))))))
 
-(defn register
-  "Ring handler for registering a new user with the IM server. If successful,
-  perform a regular login to get a proper token and store it in the session."
-  [{{:keys [username password service]} :params :as _req}]
-  (let [service (use-backend-service service)]
-    (try
-      ;; Registration only returns a temporaryToken valid for 24 hours.
-      (im-auth/register service username password)
-      ;; We call the login service directly after so we can get a proper token.
-      (let [[user+token renamedLists] (login service username password)]
-        ;; We're passing renamedLists although there shouldn't be any due to
-        ;; being a new account.
-        (-> (response/ok {:identity user+token
-                          :renamedLists renamedLists})
-            (assoc :session ^:recreate {:identity user+token})))
-      (catch Exception e
-        (let [{:keys [status] :as res} (ex-data e)]
-          (if status
-            res
-            (response/internal-server-error {:error (ex-message e)})))))))
+(defn handle-auth [request] (account-response request false))
+(defn register [request] (account-response request true))
 
-(defn oauth2authenticator
-  [{{:keys [service mine-id provider redirect_uri]} :params :as _req}]
-  (let [service (use-backend-service service)]
-    (try
-      (-> (response/ok (im-auth/oauth2authenticator service provider))
-          (assoc :session {:service service
-                           :mine-id mine-id
-                           :redirect_uri redirect_uri}))
-      (catch Exception e
-        ;; Forward the error response to client so it can handle it.
-        (ex-data e)))))
+(defn logout [request]
+  (let [{:keys [service mine-id]} (configured-mine (:params request))
+        context (transactions/context! request)]
+    (locking (:lock context)
+      (let [canceled? (try (transactions/invalidate! context mine-id) true (catch Exception _ false))
+            revoked? (try
+                       (when (:token service)
+                         (http/with-middleware [#'http/wrap-request #'utils/wrap-timeout]
+                           (im-auth/logout service)))
+                       true
+                       (catch Exception error (= 401 (:status (ex-data error)))))
+            confirmed? (and canceled? revoked?)]
+        (-> (response/ok (cond-> {:success true :revoked confirmed?}
+                           (not confirmed?)
+                           (assoc :warning "Signed out locally. Remote sign-out could not be confirmed.")))
+            (assoc :session (with-meta (transactions/session request context) {:recreate true})))))))
 
-(defn oauth2callback
-  [{{:keys [provider state code]} :params
-    {:keys [service mine-id redirect_uri]} :session}]
-  (try
-    (let [res (im-auth/oauth2callback service {:provider provider :state state :code code :redirect_uri redirect_uri})
-          {:keys [renamedLists user token]} (:output res)
-          user+token (assoc user
-                            :token token
-                            :login-method :oauth2)]
-      (-> (response/found (mine-path mine-id))
-          (assoc :session ^:recreate {:identity user+token
-                                      :init {:identity user+token
-                                             :renamedLists renamedLists}})))
-    (catch Exception e
-      (timbre/errorf "oauth2callback error: %s" (ex-message e))
-      (let [{:keys [body]} (ex-data e)
-            error (or (:error (cheshire/parse-string body true))
-                      (ex-message e))]
-        (-> (response/found (mine-path mine-id))
-            (assoc :session {:init {:events [[:messages/add
-                                              {:style "warning"
-                                               :markup (str "Failed to login using OAuth 2.0"
-                                                            (when (not-empty error)
-                                                              (str ": " error)))}]]}}))))))
+(defn revoke [request]
+  (let [{:keys [service]} (configured-mine (:params request))]
+    (when-not (:token service) (throw (invalid-request)))
+    (mine/request! service "revoke" {:token (:token service)})
+    (response/ok {:success true})))
+
+(defn oauth2authenticator [request]
+  (let [{:keys [mine-id provider request-id redirect_uri] :as params} (:params request)
+        binding (configured-mine params)]
+    (when-not (and (single-value? mine-id 128) (single-value? provider 128)
+                   (single-value? request-id 128))
+      (throw (invalid-request)))
+    (let [redirect (public-callback provider)]
+      (when (and redirect_uri (not= redirect redirect_uri)) (throw (invalid-request)))
+      (let [context (transactions/context! request)
+            result (transactions/begin! context (assoc binding :provider provider
+                                                       :request-id request-id :redirect-uri redirect))]
+        (-> (response/ok result)
+            (assoc :session (transactions/session request context)))))))
+
+(defn oauth2callback [request]
+  (let [context (transactions/existing-context request)
+        attempt (transactions/claim! context (:params request))]
+    (transactions/finish! context attempt (:params request))
+    (-> (response/found (:mine-path attempt))
+        (assoc :session (with-meta (transactions/session request context) {:recreate true})))))
+
+(defn- safe-error [error]
+  (let [{:keys [status kind]} (ex-data error)
+        status (if (#{400 401 403 409 429 502 503} status) status 502)
+        message (if (#{:state :configuration :unsupported :cleanup} kind)
+                  (ex-message error)
+                  (if (= 401 status) "The email or password was not accepted."
+                      "Authentication could not complete. Please check the details and try again."))]
+    {:status status :body {:error message}}))
+
+(defn- wrap-auth [handler]
+  (fn [request]
+    (-> (try (handler request) (catch Exception error (safe-error error)))
+        (assoc-in [:headers "Cache-Control"] "no-store"))))
 
 (defroutes routes
-  (POST "/logout" [] (wrap-configured-service logout))
-  (POST "/login" [] (wrap-configured-service handle-auth))
-  (POST "/register" [] (wrap-configured-service register))
-  (POST "/oauth2authenticator" [] (wrap-configured-service oauth2authenticator))
+  (POST "/logout" [] (wrap-auth logout))
+  (POST "/login" [] (wrap-auth handle-auth))
+  (POST "/register" [] (wrap-auth register))
+  (POST "/revoke" [] (wrap-auth revoke))
+  (POST "/oauth2authenticator" [] (wrap-auth oauth2authenticator))
   (wrap-params
    (wrap-keyword-params
-    (GET "/oauth2callback" [] oauth2callback))))
+    (GET "/oauth2callback" [] (wrap-auth oauth2callback)))))

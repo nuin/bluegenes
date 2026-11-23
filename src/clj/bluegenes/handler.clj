@@ -4,6 +4,7 @@
             [ring.middleware.reload :refer [wrap-reload]]
             [compojure.middleware :refer [wrap-canonical-redirect]]
             [muuntaja.middleware :refer [wrap-format wrap-params]]
+            [bluegenes.ws.auth :as auth]
             [config.core :refer [env]]))
 
 (defn remove-trailing-slash
@@ -18,20 +19,24 @@
         uri))
     uri))
 
-(def handler (-> #'routes
+(defn make-handler []
+  (-> #'routes
                  ;; Watch changes to the .clj and hot reload them
-                 (cond-> (:development env) (wrap-reload {:dirs ["src/clj"]}))
+      (cond-> (:development env) (wrap-reload {:dirs ["src/clj"]}))
                  ;; Add session functionality
                  ;; SameSite CANNOT be Strict, as this would cause Firefox to
                  ;; NOT include the cookie when redirected back to Bluegenes
                  ;; from an OAuth2 provider.
-                 (wrap-session {:cookie-attrs {:same-site :lax :http-only true}})
+      (wrap-session {:cookie-attrs {:same-site :lax :http-only true
+                                    :secure (auth/secure-cookie?)}})
                  ;; Merges request :body-params into :params
-                 (wrap-params)
+      (wrap-params)
                  ;; Decodes requests and encodes responses based on headers.
                  ;; Primarily to take transit+json body from frontend and put
                  ;; into :body-params.
-                 (wrap-format)
+      (wrap-format)
                  ;; Redirect to the correct route when trailing slash is present in path.
                  ;; This is for the frontend router, which doesn't handle trailing slashes.
-                 (wrap-canonical-redirect remove-trailing-slash)))
+      (wrap-canonical-redirect remove-trailing-slash)))
+
+(def handler (make-handler))
