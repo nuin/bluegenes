@@ -25,13 +25,13 @@
      (let [key (str key)
            value (get @stubbed-storage key)]
        (assoc coeffects :local-store value))))
-  (rf/reg-fx
-   :persist
-   (fn [[key value]]
-     (let [key (str key)]
-       (if (some? value)
-         (swap! stubbed-storage assoc key value)
-         (swap! stubbed-storage dissoc key)))))
+  (let [persist (fn [[key value]]
+                  (let [key (str key)]
+                    (if (some? value)
+                      (swap! stubbed-storage assoc key value)
+                      (swap! stubbed-storage dissoc key))))]
+    (rf/reg-fx :persist persist)
+    (rf/reg-fx :persist-many #(doseq [entry %] (persist entry))))
   nil)
 
 (defn stub-fetch-fn

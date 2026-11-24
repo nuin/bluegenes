@@ -4,7 +4,7 @@
             [bluegenes.route :as route]
             [imcljs.auth :as im-auth]
             [bluegenes.interceptors :refer [origin]]
-            [bluegenes.config :refer [server-vars]]))
+            [bluegenes.auth.requests :as requests]))
 
 (defn slim-service
   "Constrains a service map to only the keys needed by the backend API."
@@ -21,114 +21,87 @@
     :timeout 15000
     :style "info"}])
 
-(reg-event-fx
- ::login
- ;; Fire events to log in a user
- (fn [{db :db} [_ username password]]
-   (let [current-mine (:current-mine db)
-         service (get-in db [:mines current-mine :service])]
-     {:db (update-in db [:mines current-mine :auth] assoc
-                     :thinking? true
-                     :error? false)
-      ::fx/http {:uri "/api/auth/login"
-                 :method :post
-                 :on-success [::login-success]
-                 :on-failure [::login-failure]
-                 :on-unauthorised [::login-failure]
-                 :transit-params {:username username
-                                  :password password
-                                  :service (slim-service service)}}})))
+(defn- account-request [{:keys [db auth-requests]} operation username password]
+  (let [mine (:current-mine db)
+        request (requests/create db mine)]
+    {:db (-> (requests/attach db request)
+             (update-in [:mines mine :auth] assoc :thinking? true :error? false))
+     :persist (requests/persistence auth-requests request)
+     ::fx/http {:uri (str "/api/auth/" operation) :method :post
+                :on-success [::login-success request]
+                :on-failure [::login-failure request]
+                :on-unauthorised [::login-failure request]
+                :transit-params {:username username :password password :mine-id (name mine)
+                                 :service (slim-service (get-in db [:mines mine :service]))}}}))
+
+(reg-event-fx ::login requests/interceptors
+              (fn [cofx [_ username password]] (account-request cofx "login" username password)))
+
+(reg-event-fx ::register requests/interceptors
+              (fn [cofx [_ username password]] (account-request cofx "register" username password)))
+
+(defn clear-private-assets [db mine]
+  (cond-> (-> db
+              (assoc-in [:assets :lists mine] [])
+              (assoc-in [:assets :templates mine] {}))
+    (= mine (:current-mine db)) (assoc-in [:lists :by-id] {})))
 
 (reg-event-fx
- ::login-success
- ;; Store a user's identity and assoc their token to the service of the current mine,
- ;; then (re)fetch the user's lists.
- (fn [{db :db} [_ {{:keys [token] :as identity} :identity ?renamedLists :renamedLists}]]
-   (let [current-mine (:current-mine db)]
-     {:db (-> db
-              (update-in [:mines current-mine :auth] assoc
-                         :thinking? false
-                         :identity identity
-                         :message nil
-                         :error? false)
-              (assoc-in [:mines current-mine :service :token] token)
-              ;; The old by-id map is used to detect newly added lists.
-              ;; We clear it here as otherwise all the lists belonging to the
-              ;; user will be annotated as new.
-              (update-in [:lists :by-id] empty)
-              ;; Since both :assets/fetch-lists and start-router is run below,
-              ;; this causes lists to be denormalized based on previous list
-              ;; data when router starts, and for it to get updated when lists
-              ;; are fetched, causing user lists to be marked as new.
-              (update-in [:assets :lists current-mine] empty)
-              (route/force-controllers-rerun))
-      :dispatch-n [[:save-login current-mine identity]
-                   [:assets/fetch-lists]
-                   [:assets/fetch-templates]
-                   (when (seq ?renamedLists)
-                     (renamedLists->message ?renamedLists))
-                   ;; Restart router to rerun controllers.
-                   [:bluegenes.events.boot/start-router]]
-      ;; This also tracks sign-ups, which immediately follows with login-success.
-      :track-event ["login"]})))
-
-(reg-event-db
- ::login-failure
- ;; Clear a user's identity and store an error message
- (fn [db [_ res]]
-   (update-in db [:mines (:current-mine db) :auth] assoc
-              :thinking? false
-              :identity nil
-              :error? true
-              :message (get-in res [:body :error]))))
+ ::login-success requests/interceptors
+ (fn [{:keys [db auth-requests local-store]}
+      [_ {:keys [mine] :as request} {:keys [identity renamedLists]}]]
+   (if-not (requests/current? db auth-requests request)
+     (requests/discard db request (:token identity))
+     (let [selected? (= mine (:current-mine db))]
+       {:db (cond-> (-> db
+                        (update-in [:mines mine :auth] assoc :thinking? false :identity identity
+                                   :message nil :error? false)
+                        (assoc-in [:mines mine :service :token] (:token identity))
+                        (clear-private-assets mine))
+              selected? route/force-controllers-rerun)
+        :persist [:bluegenes/login (assoc local-store mine identity)]
+        :dispatch-n (cond-> [[:assets/fetch-lists nil mine]
+                             [:assets/fetch-templates nil mine]]
+                      (seq renamedLists) (conj (renamedLists->message renamedLists))
+                      selected? (conj [:bluegenes.events.boot/start-router]))
+        :track-event ["login"]}))))
 
 (reg-event-fx
- ::logout
- ;; Fire events to log out a user. This clears the Session on the server
- (fn [{db :db} [_]]
-   (let [current-mine (:current-mine db)]
-     {:db (update-in db [:mines current-mine :auth] assoc
-                     :thinking? true)
-      ::fx/http {:uri "/api/auth/logout"
-                 :method :post
-                 :on-success [::logout-success]
-                 ;; We don't really care if anything goes wrong.
-                 :on-failure [::logout-success]
-                 :on-unauthorised [::logout-success]
-                 :transit-params {:service (slim-service (get-in db [:mines current-mine :service]))}}})))
+ ::login-failure requests/interceptors
+ (fn [{:keys [db auth-requests]} [_ {:keys [mine] :as request} res]]
+   (when (requests/current? db auth-requests request)
+     {:db (update-in db [:mines mine :auth] assoc :thinking? false :error? true
+                     :message (or (get-in res [:body :error]) "Sign-in could not complete. Please try again."))})))
 
 (reg-event-fx
- ::logout-success
- ;; Clear the user's identity and reboot the application
- (fn [{db :db} [_ _response]]
-   (let [current-mine (:current-mine db)]
-     {:db (-> db
-              (update-in [:mines current-mine :auth] assoc
-                         :thinking? false
-                         :identity nil
-                         :error? false
-                         :message nil)
-              (assoc-in [:mines current-mine :service :token] nil)
-              (route/force-controllers-rerun))
-      :dispatch-n [[:remove-login current-mine]
-                   [:reboot]]})))
+ ::logout requests/interceptors
+ (fn [{:keys [db auth-requests local-store]} _]
+   (let [mine (:current-mine db)
+         request (requests/create db mine)]
+     {:db (-> (requests/attach db request)
+              (update-in [:mines mine :auth] assoc :thinking? true :identity nil :error? false :message nil)
+              (assoc-in [:mines mine :service :token] nil)
+              (clear-private-assets mine))
+      :persist-many [(requests/persistence auth-requests request)
+                     [:bluegenes/login (dissoc local-store mine)]]
+      ::fx/http {:uri "/api/auth/logout" :method :post
+                 :on-success [::logout-success request]
+                 :on-failure [::logout-success request]
+                 :on-unauthorised [::logout-success request]
+                 :transit-params {:mine-id (name mine)
+                                  :service (slim-service (get-in db [:mines mine :service]))}}})))
 
 (reg-event-fx
- ::register
- (fn [{db :db} [_ username password]]
-   (let [current-mine (:current-mine db)
-         service (get-in db [:mines current-mine :service])]
-     {:db (update-in db [:mines current-mine :auth] assoc
-                     :thinking? true
-                     :error? false)
-      ::fx/http {:uri "/api/auth/register"
-                 :method :post
-                 :on-success [::login-success]
-                 :on-failure [::login-failure]
-                 :on-unauthorised [::login-failure]
-                 :transit-params {:username username
-                                  :password password
-                                  :service (slim-service service)}}})))
+ ::logout-success requests/interceptors
+ (fn [{:keys [db auth-requests]} [_ {:keys [mine] :as request} response]]
+   (when (requests/current? db auth-requests request)
+     {:db (assoc-in db [:mines mine :auth :thinking?] false)
+      :dispatch-n (cond-> []
+                    (= mine (:current-mine db)) (conj [:reboot])
+                    (not (or (true? (:revoked response)) (= 401 (:status response))))
+                    (conj [:messages/add
+                           {:style "warning" :timeout 10000
+                            :markup "Signed out locally. Remote sign-out could not be confirmed."}]))})))
 
 (reg-event-fx
  ::request-reset-password
@@ -209,35 +182,22 @@
               :request-reset-success? false)))
 
 (reg-event-fx
- ::oauth2
- [(origin)]
- (fn [{db :db origin :origin} [_ provider]]
-   (let [current-mine (:current-mine db)
-         service (get-in db [:mines current-mine :service])
-         redirect_uri (str origin
-                           (str (:bluegenes-deploy-path @server-vars)
-                                "/api/auth/oauth2callback?provider=")
-                           provider)]
-     {:db (update-in db [:mines current-mine :auth] assoc
-                     :error? false)
-      ::fx/http {:uri "/api/auth/oauth2authenticator"
-                 :method :post
-                 :on-success [::oauth2-success redirect_uri]
-                 :on-failure [::oauth2-failure]
-                 :on-unauthorised [::oauth2-failure]
-                 :transit-params {:service (slim-service service)
-                                  :mine-id (name current-mine)
-                                  :provider provider
-                                  :redirect_uri redirect_uri}}})))
+ ::oauth2 requests/interceptors
+ (fn [{:keys [db auth-requests]} [_ provider]]
+   (let [mine (:current-mine db)
+         request (requests/create db mine)]
+     {:db (-> (requests/attach db request)
+              (update-in [:mines mine :auth] assoc :thinking? true :error? false))
+      :persist (requests/persistence auth-requests request)
+      ::fx/http {:uri "/api/auth/oauth2authenticator" :method :post
+                 :on-success [::oauth2-success request]
+                 :on-failure [::login-failure request]
+                 :on-unauthorised [::login-failure request]
+                 :transit-params {:service (slim-service (get-in db [:mines mine :service]))
+                                  :mine-id (name mine) :provider provider :request-id (:id request)}}})))
 
 (reg-event-fx
- ::oauth2-success
- (fn [{db :db} [_ redirect_uri link]]
-   {:external-redirect (str link "&redirect_uri=" (js/encodeURIComponent redirect_uri))}))
-
-(reg-event-db
- ::oauth2-failure
- (fn [db [_ res]]
-   (update-in db [:mines (:current-mine db) :auth] assoc
-              :error? true
-              :message (get-in res [:body :error]))))
+ ::oauth2-success requests/interceptors
+ (fn [{:keys [db auth-requests]} [_ request {:keys [authorizationUrl]}]]
+   (when (requests/current? db auth-requests request)
+     {:external-redirect authorizationUrl})))

@@ -2,6 +2,7 @@
   (:require [cljs.test :refer-macros [deftest is testing use-fixtures]]
             [bluegenes.test-utils :as utils]
             [re-frame.core :as rf]
+            [re-frame.db :as rf-db]
             [day8.re-frame.test :refer-macros [run-test-sync run-test-async wait-for]]
             [bluegenes.events]
             [bluegenes.subs]
@@ -26,7 +27,7 @@
 (deftest reuse-anonymous-token
   (run-test-sync
    (utils/stub-local-storage)
-   (rf/dispatch [:authentication/store-token "existing-token"])
+   (swap! rf-db/app-db assoc-in [:mines nil :service :token] "existing-token")
    (with-redefs [auth/who-am-i? (utils/stub-fetch-fn {})
                  config/init-vars (delay nil)]
      (rf/dispatch [:authentication/init])
@@ -43,8 +44,8 @@
                  fetch/templates (utils/stub-fetch-fn {})
                  auth/who-am-i?  (utils/stub-fetch-fn {})
                  config/init-vars (delay nil)]
-     (rf/dispatch [:bluegenes.events.auth/login-success
-                   {:identity {:token "login-token"}}])
+     (swap! rf-db/app-db assoc-in [:mines nil :auth :identity] {:token "login-token"})
+     (swap! rf-db/app-db assoc-in [:mines nil :service :token] "login-token")
      (rf/dispatch [:authentication/init])
      (testing "prioritise login token"
        (let [token @(rf/subscribe [:active-token])]
@@ -65,8 +66,10 @@
 (deftest use-oauth2-token
   (run-test-async
    (utils/stub-local-storage)
+   (swap! utils/stubbed-storage assoc ":bluegenes/auth-requests" {[nil nil] "oauth-request"})
    (with-redefs [auth/who-am-i? (utils/stub-fetch-fn {})
-                 config/init-vars (delay {:identity {:token "oauth2-token"}})]
+                 config/init-vars (delay {:identity {:token "oauth2-token"}
+                                          :auth-request {:mine nil :root nil :id "oauth-request"}})]
      (rf/dispatch-sync [:authentication/init])
      (wait-for [:authentication/store-token]
        (testing "use oauth2 token"
@@ -79,7 +82,7 @@
    (let [orig-fn fetch/session]
      (set! fetch/session (utils/stub-fetch-fn "valid-token"))
      (swap! utils/stubbed-variables conj #(set! fetch/session orig-fn)))
-   (rf/dispatch-sync [:authentication/store-token "invalid-token"])
+   (swap! rf-db/app-db assoc-in [:mines nil :service :token] "invalid-token")
    (with-redefs [auth/who-am-i? (utils/stub-fetch-fn {:statusCode 401})
                  config/init-vars (delay nil)]
      (rf/dispatch-sync [:authentication/init])

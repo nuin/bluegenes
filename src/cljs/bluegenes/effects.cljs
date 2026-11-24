@@ -22,14 +22,15 @@
          value (t/read (t/reader :json) (.getItem js/localStorage key))]
      (assoc coeffects :local-store value))))
 
-(reg-fx
- :persist
- (fn [[key value]]
-   (let [key (str key)]
-     (if (some? value)
-       (.setItem js/localStorage key (t/write (t/writer :json-verbose) value))
+(defn persist! [[key value]]
+  (let [key (str key)]
+    (if (some? value)
+      (.setItem js/localStorage key (t/write (t/writer :json-verbose) value))
        ;; Specifying `nil` as value removes the key instead.
-       (.removeItem js/localStorage key)))))
+      (.removeItem js/localStorage key))))
+
+(reg-fx :persist persist!)
+(reg-fx :persist-many #(doseq [entry %] (persist! entry)))
 
 ;; Examples (we do not endorse storing your cats in localStorage)
 

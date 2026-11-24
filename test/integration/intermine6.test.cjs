@@ -31,13 +31,24 @@ test('BlueGenes registration, login, lists and logout work with InterMine 6', as
     }, { name, type: 'Employee' });
     const created = (await api('lists', identity.token)).lists.find(list => list.name === name);
     assert.equal(created.size, 1);
+    const preference = `retained-${randomUUID()}`;
+    await api('user/preferences', identity.token, {
+      method: 'POST', body: new URLSearchParams({ aka: preference }),
+    });
+    await withAccount(async other => {
+      assert.equal((await api('lists', other.token)).lists.some(list => list.name === name), false);
+      assert.notEqual((await api('user/preferences', other.token)).preferences.aka, preference);
+    });
     await auth('logout', identity.token);
     const expired = await fetch(`${mine}/service/user?${new URLSearchParams({ token: identity.token })}`,
       { signal: AbortSignal.timeout(15000) });
     assert.equal(expired.status, 401, 'Logout must invalidate the server-side API token');
     const session = await api('session');
+    assert.equal((await api('lists', session.token)).lists.some(list => list.name === name), false);
     const loggedIn = await auth('login', session.token, credentials);
     const retained = (await api('lists', loggedIn.identity.token)).lists.find(list => list.name === name);
     assert.equal(retained.size, 1, 'The private list must survive logout and login');
+    assert.equal((await api('user/preferences', loggedIn.identity.token)).preferences.aka,
+      preference, 'Account preferences must survive logout and login');
   });
 });

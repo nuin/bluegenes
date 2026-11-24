@@ -8,7 +8,8 @@
             [bluegenes.pages.lists.events :as lists]
             [bluegenes.config :refer [server-vars init-vars read-default-ns]]
             [clojure.string :as str]
-            [bluegenes.events.auth :refer [renamedLists->message]]))
+            [bluegenes.events.auth :refer [renamedLists->message clear-private-assets]]
+            [bluegenes.auth.requests :as requests]))
 
 (defn boot-flow
   "Produces a set of re-frame instructions that load all of InterMine's assets into BlueGenes
@@ -30,7 +31,7 @@
                :dispatch [:authentication/init]})
             ;; Wait for token as some assets need it for private data (eg. lists, queries).
             {:when :seen?
-             :events :authentication/store-token
+             :events :authentication/ready
              :dispatch-n [[:assets/fetch-web-properties]
                           [:assets/fetch-bg-properties]
                           [:assets/fetch-model]
@@ -156,11 +157,9 @@
          current-mine (or (keyword (utils/mine-from-pathname)) default-ns)
          ;; These could be passed from the Bluegenes backend and result in
          ;; events being dispatched.
-         renamedLists (some-> @init-vars :renamedLists not-empty)
          linkIn       (some-> @init-vars :linkIn not-empty)
          init-events (-> (some-> @init-vars :events not-empty)
                          (cond->
-                           renamedLists ((fnil conj []) (renamedLists->message renamedLists))
                            linkIn       ((fnil conj []) [:handle-link-in linkIn])))
          ;; Configured mines are also passed from the Bluegenes backend,
          ;; usually defined in config.edn.
@@ -330,66 +329,76 @@
    (set! init-vars (delay nil))
    (set! js/initVars nil)))
 
-;; Figure out how we're going to initialise authentication.
-;; There are 4 different cases we need to handle:
-;; - The user has logged in previously => Re-use their identity!
-;; - The user has an old anonymous token => Re-use that token!
-;; - The user logged in with OAuth2 => Use token from init-vars identity!
-;; - The user has no token => Get a new one!
-;; In the first 3 cases, we also have to make sure the token is still valid, so
-;; we use the who-am-i? service for this.
-(reg-event-fx
- :authentication/init
- [(inject-cofx :local-store :bluegenes/login)]
- (fn [{db :db, login :local-store} [evt]]
-   (let [current-mine (:current-mine db)
-         ;; Add a persisted login identity if defined for mine.
-         db+login (if-let [identity (get login current-mine)]
-                    (assoc-in db [:mines current-mine :auth :identity] identity)
-                    db)
-         ;; Add an OAuth2 identity if present (replaces the above).
-         oauth2-identity (some-> @init-vars :identity not-empty)
-         db+login (cond-> db+login
-                    oauth2-identity (assoc-in [:mines current-mine :auth :identity] oauth2-identity))
-         auth-token (get-in db+login [:mines current-mine :auth :identity :token])
-         service    (get-in db+login [:mines current-mine :service])
-         anon-token (:token service)
-         token      (or auth-token anon-token)]
-     {:db db+login
-      :im-chan (if token
-                 {:chan (auth/who-am-i? service token)
-                  :on-success [:authentication/store-token token oauth2-identity]
-                  :on-unauthorised [:authentication/invalid-token (boolean auth-token)]
-                  :on-failure [:assets/failure evt]}
-                 {:chan (fetch/session service)
-                  :on-success [:authentication/store-token]
-                  :on-failure [:assets/failure evt]})})))
+(defn- oauth-handoff [request persisted]
+  (let [{:keys [identity auth-request renamedLists]} @init-vars]
+    (when (and (seq identity) (string? (:id auth-request))
+               (= (:mine auth-request) (some-> (:mine request) name))
+               (= (:root auth-request) (:root request))
+               (= (:id auth-request) (get persisted (requests/key-for request))))
+      {:identity identity :renamedLists renamedLists})))
 
-;; The token has likely expired, so we fetch a new one.
-;; We also clear the login token if it had expired.
 (reg-event-fx
- :authentication/invalid-token
- (fn [{db :db} [evt clear-login?]]
-   (let [current-mine (:current-mine db)]
-     (cond-> {:im-chan {:chan (fetch/session (get-in db [:mines current-mine :service]))
-                        :on-success [:authentication/store-token]
-                        :on-failure [:assets/failure evt]}}
-       clear-login? (->
-                     (assoc :db (update-in db [:mines current-mine] dissoc :auth))
-                     (assoc :dispatch [:remove-login current-mine]))))))
+ :authentication/init requests/interceptors
+ (fn [{:keys [db auth-requests local-store]} [evt]]
+   (let [mine (:current-mine db)
+         fresh (requests/create db mine)
+         request (assoc fresh :id (or (get auth-requests (requests/key-for fresh)) (:id fresh)))
+         {:keys [identity renamedLists]} (oauth-handoff request auth-requests)
+         saved (get local-store mine)
+         db (cond-> (requests/attach db request)
+              (or identity saved) (assoc-in [:mines mine :auth :identity] (or identity saved)))
+         auth-token (get-in db [:mines mine :auth :identity :token])
+         service (get-in db [:mines mine :service])
+         token (or auth-token (:token service))
+         rejected (when-not identity (:identity @init-vars))
+         binding (some-> (:auth-request @init-vars) (update :mine keyword))]
+     (merge (when (and rejected binding) (requests/discard db binding (:token rejected)))
+            {:db db
+             :persist (requests/persistence auth-requests request)
+             :im-chan (if token
+                        {:chan (auth/who-am-i? service token)
+                         :on-success [:authentication/store-token request token identity renamedLists]
+                         :on-unauthorised [:authentication/invalid-token request (boolean auth-token)]
+                         :on-failure [:authentication/failure request evt]}
+                        {:chan (fetch/session service)
+                         :on-success [:authentication/store-token request]
+                         :on-failure [:authentication/failure request evt]})}))))
 
-;; Store an authentication token for a given mine.
 (reg-event-fx
- :authentication/store-token
- (fn [{db :db} [_ token oauth2-identity]]
-   (let [current-mine (:current-mine db)]
-     (cond-> {:db (assoc-in db [:mines current-mine :service :token] token)}
-       ;; This branch indicates successful login via OAuth2, which means we should persist it.
-       oauth2-identity (assoc :dispatch [:save-login current-mine oauth2-identity])
+ :authentication/invalid-token requests/interceptors
+ (fn [{:keys [db auth-requests local-store]} [evt {:keys [mine] :as request} clear-login?]]
+   (when (requests/current? db auth-requests request)
+     (cond-> {:im-chan {:chan (fetch/session (get-in db [:mines mine :service]))
+                        :on-success [:authentication/store-token request]
+                        :on-failure [:authentication/failure request evt]}}
+       clear-login? (assoc :db (-> db
+                                   (assoc-in [:mines mine :auth :identity] nil)
+                                   (assoc-in [:mines mine :service :token] nil)
+                                   (clear-private-assets mine))
+                           :persist [:bluegenes/login (dissoc local-store mine)])))))
+
+(reg-event-fx
+ :authentication/store-token requests/interceptors
+ (fn [{:keys [db auth-requests local-store]}
+      [_ {:keys [mine] :as request} token oauth-identity renamedLists]]
+   (if-not (requests/current? db auth-requests request)
+     (when oauth-identity (requests/discard db request token))
+     (cond-> {:db (assoc-in db [:mines mine :service :token] token)
+              :dispatch-n (cond-> []
+                            (= mine (:current-mine db)) (conj [:authentication/ready])
+                            (seq renamedLists) (conj (renamedLists->message renamedLists)))}
+       oauth-identity (assoc :persist [:bluegenes/login (assoc local-store mine oauth-identity)])
        (nil? token) (assoc :dispatch [:messages/add
-                                      {:markup [:span "Failed to acquire token. It's likely that you have no connection to the InterMine instance."]
-                                       :style "danger"
-                                       :timeout 0}])))))
+                                      {:markup "Could not acquire credentials. Please check the connection to the mine."
+                                       :style "danger" :timeout 0}])))))
+
+(reg-event-fx :authentication/ready (fn [_ _] {}))
+
+(reg-event-fx
+ :authentication/failure requests/interceptors
+ (fn [{:keys [db auth-requests]} [_ {:keys [mine] :as request} evt]]
+   (when (and (requests/current? db auth-requests request) (= mine (:current-mine db)))
+     {:dispatch [:assets/failure evt]})))
 
 ; Fetch model
 (def preferred-tag "im:preferredBagType")
@@ -433,27 +442,35 @@
 
 ; Fetch lists
 
+(defn- current-service? [db mine service]
+  (= service (select-keys (get-in db [:mines mine :service]) [:root :token])))
+
+(reg-event-fx
+ :assets/failure-for-service
+ (fn [{:keys [db]} [_ mine service evt]]
+   (when (and (= mine (:current-mine db)) (current-service? db mine service))
+     {:dispatch [:assets/failure evt]})))
+
 (reg-event-fx
  :assets/success-fetch-lists
- (fn [{db :db} [_ mine-kw next-evt lists]]
-   (cond-> {:db (assoc-in db [:assets :lists mine-kw] lists)
-            :dispatch-n []}
-     (vector? next-evt)
-     (update :dispatch-n conj next-evt)
-     ;; Denormalize lists right-away if you're on the lists page.
-     (= :lists-panel (:active-panel db))
-     (update :dispatch-n conj [:lists/initialize]))))
+ (fn [{:keys [db]} [_ mine service next-evt lists]]
+   (when (current-service? db mine service)
+     (cond-> {:db (assoc-in db [:assets :lists mine] lists) :dispatch-n []}
+       (vector? next-evt) (update :dispatch-n conj next-evt)
+       (and (= mine (:current-mine db)) (= :lists-panel (:active-panel db)))
+       (update :dispatch-n conj [:lists/initialize])))))
 
-;; This event is also dispatched externally from many other namespaces.
 (reg-event-fx
  :assets/fetch-lists
- (fn [{db :db} [evt next-evt]]
-   {:db (assoc-in db (concat lists/root [:fetching-lists?]) true)
-    :im-chan {:chan (fetch/lists
-                     (get-in db [:mines (:current-mine db) :service])
-                     {:showTags true})
-              :on-success [:assets/success-fetch-lists (:current-mine db) next-evt]
-              :on-failure [:assets/failure evt]}}))
+ (fn [{:keys [db]} [evt next-evt origin-mine]]
+   (let [mine (or origin-mine (:current-mine db))
+         service (get-in db [:mines mine :service])
+         snapshot (select-keys service [:root :token])]
+     {:db (cond-> db
+            (= mine (:current-mine db)) (assoc-in (concat lists/root [:fetching-lists?]) true))
+      :im-chan {:chan (fetch/lists service {:showTags true})
+                :on-success [:assets/success-fetch-lists mine snapshot next-evt]
+                :on-failure [:assets/failure-for-service mine snapshot evt]}})))
 
 ; Fetch class keys
 
@@ -476,20 +493,20 @@
 
 (reg-event-fx
  :assets/success-fetch-templates
- (fn [{db :db} [_ mine-kw next-evt templates]]
-   (cond-> {:db (assoc-in db [:assets :templates mine-kw] templates)
-            :dispatch-n []}
-     (vector? next-evt)
-     (update :dispatch-n conj next-evt))))
+ (fn [{:keys [db]} [_ mine service next-evt templates]]
+   (when (current-service? db mine service)
+     (cond-> {:db (assoc-in db [:assets :templates mine] templates) :dispatch-n []}
+       (vector? next-evt) (update :dispatch-n conj next-evt)))))
 
-;; This event is also dispatched externally from other namespaces.
 (reg-event-fx
  :assets/fetch-templates
- (fn [{db :db} [evt next-evt]]
-   {:db db
-    :im-chan {:chan (fetch/templates (get-in db [:mines (:current-mine db) :service]))
-              :on-success [:assets/success-fetch-templates (:current-mine db) next-evt]
-              :on-failure [:assets/failure evt]}}))
+ (fn [{:keys [db]} [evt next-evt origin-mine]]
+   (let [mine (or origin-mine (:current-mine db))
+         service (get-in db [:mines mine :service])
+         snapshot (select-keys service [:root :token])]
+     {:im-chan {:chan (fetch/templates service)
+                :on-success [:assets/success-fetch-templates mine snapshot next-evt]
+                :on-failure [:assets/failure-for-service mine snapshot evt]}})))
 
 ; Fetch summary fields
 
