@@ -4,6 +4,7 @@
             [im-tables.events]
             [bluegenes.config :refer [server-vars]]
             [bluegenes.auth.storage :as storage]
+            [bluegenes.primary-ui]
             [bluegenes.events.boot]
             [bluegenes.events.auth]
             [bluegenes.events.registry]

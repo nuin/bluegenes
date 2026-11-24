@@ -218,10 +218,11 @@
     ["/querybuilder"
      {:name ::querybuilder
       :controllers
-      [{:parameters {:path [:mine]}
-        :start #(dispatch [:set-active-panel :querybuilder-panel
-                           nil
-                           [:bluegenes.pages.querybuilder.events/load-querybuilder]])}]}]
+      [{:parameters {:path [:mine] :query [:query :run]}
+        :start (fn [{{:keys [mine]} :path {:keys [query run]} :query}]
+                 (dispatch [:set-active-panel :querybuilder-panel
+                            nil
+                            [:primary-ui/import-query mine query run]]))}]}]
     ["/results/:title"
      {:name ::results
       :controllers

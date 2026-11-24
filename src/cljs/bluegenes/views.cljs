@@ -7,6 +7,7 @@
             [bluegenes.pages.home.views :as home]
             [bluegenes.components.search.views :as search]
             [bluegenes.effects]
+            [bluegenes.primary-ui :as primary]
             [bluegenes.pages.reportpage.views :as reportpage]
             [bluegenes.pages.templates.views :as templates]
             [bluegenes.pages.querybuilder.views :as qb]
@@ -45,6 +46,7 @@
 
 (defn main-panel []
   (let [active-panel (subscribe [:active-panel])
+        query-error (subscribe [:primary-ui/query-error])
         main-color (subscribe [:branding/header-main])
         secondary-color (subscribe [:branding/header-secondary])
         text-color (subscribe [:branding/header-text])]
@@ -61,6 +63,8 @@
           [loader/mine-loader]
           [icons/icons]
           [nav/main]
-          [:main [show-panel @active-panel]]
+          [:main (if (and (= :querybuilder-panel @active-panel) @query-error)
+                   [primary/query-error-panel]
+                   [show-panel @active-panel])]
           [footer/main]
           [alerts/main]])])))
