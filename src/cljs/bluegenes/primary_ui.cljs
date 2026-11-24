@@ -2,7 +2,7 @@
   (:require [clojure.string :as str]
             [imcljs.path :as path]
             [imcljs.query :as query]
-            [re-frame.core :refer [reg-event-fx reg-sub]]
+            [re-frame.core :refer [reg-event-fx reg-sub dispatch]]
             [bluegenes.route :as route]
             [bluegenes.utils :as utils]))
 
@@ -80,4 +80,58 @@
   [:section.container
    [:h1 "Query link unavailable"]
    [:p "The linked query was not loaded. Your existing query draft is still available."]
+   [:a {:href (route/href ::route/querybuilder)} "Open query builder"]])
+
+(def organism-paths
+  (mapv #(str "Organism." %) ["name" "taxonId" "species" "shortName" "genus" "commonName"]))
+
+(def region-paths
+  ["SequenceFeature.id" "SequenceFeature.name" "SequenceFeature.primaryIdentifier"
+   "SequenceFeature.symbol" "SequenceFeature.chromosomeLocation.start"
+   "SequenceFeature.chromosomeLocation.end" "SequenceFeature.chromosomeLocation.strand"
+   "SequenceFeature.chromosomeLocation.locatedOn.primaryIdentifier"
+   "SequenceFeature.organism.shortName" "SequenceFeature.organism.name"
+   "Chromosome.organism.shortName" "Chromosome.organism.name"])
+
+(defn capabilities [db mine]
+  (let [raw-version (get-in db [:assets :web-service-version mine])
+        version (when (or (number? raw-version)
+                          (and (string? raw-version) (re-matches #"[0-9]+" raw-version)))
+                  (js/Number raw-version))
+        model (get-in db [:mines mine :service :model])
+        failed (set (get-in db [:failed-assets mine]))
+        status (cond
+                 (some failed [:assets/fetch-model :assets/fetch-web-service-version]) :metadata-failed
+                 (or (nil? raw-version) (= "" raw-version)) :missing-version
+                 (not (and (js/Number.isSafeInteger version) (pos? version))) :invalid-version
+                 (< version 27) :unsupported-version
+                 (not (and (map? (:classes model)) (seq (:classes model)))) :missing-model
+                 :else :ready)
+        ready? (= status :ready)]
+    {:status status :version version
+     :oauth? (and ready? (>= version 36))
+     :organisms? (and ready? (every? #(valid-path? model %) organism-paths))
+     :regions? (and ready? (every? #(valid-path? model %) (concat organism-paths region-paths)))}))
+
+(reg-sub
+ :primary-ui/capabilities
+ (fn [db] (capabilities db (:current-mine db))))
+
+(defn compatibility-panel [{:keys [status version]}]
+  [:section.container {:role "alert"}
+   [:h1 "Mine unavailable"]
+   [:p (case status
+         :unsupported-version (str "This mine uses API " version ". BlueGenes requires API 27 or later.")
+         :missing-version "The mine did not provide its API version."
+         :invalid-version "The mine returned an invalid API version."
+         :missing-model "The mine's data model is unavailable."
+         :metadata-failed "The mine's version or data model could not be loaded. Cached metadata has not been used."
+         "This mine is not ready.")]
+   [:p "Try again or select another mine. If this continues, contact the mine's administrator."]
+   [:button.btn.btn-primary {:type "button" :on-click #(dispatch [:reboot])} "Try again"]])
+
+(defn regions-unavailable-panel []
+  [:section.container {:role "status"}
+   [:h1 "Regions unavailable"]
+   [:p "This mine does not provide the genomic features needed for region search."]
    [:a {:href (route/href ::route/querybuilder)} "Open query builder"]])

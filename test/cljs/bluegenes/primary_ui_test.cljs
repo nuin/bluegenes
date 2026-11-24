@@ -3,6 +3,8 @@
             [day8.re-frame.test :refer-macros [run-test-sync]]
             [re-frame.core :as rf]
             [re-frame.db :as rf-db]
+            [imcljs.fetch :as fetch]
+            [bluegenes.route :as route]
             [bluegenes.events]
             [bluegenes.primary-ui :as primary]
             [bluegenes.test-utils :as utils]))
@@ -85,3 +87,83 @@
    (is (= ["Employee.id"] (get-in @rf-db/app-db [:qb :im-query :select])))
    (rf/dispatch [:primary-ui/import-query "a" query-xml nil])
    (is (nil? (:primary-ui/query-error @rf-db/app-db)))))
+
+(defn mine-db [version model]
+  {:current-mine :a
+   :assets {:web-service-version {:a version}}
+   :mines {:a {:service {:root "https://a.example/mine" :model model}}}})
+
+(defn model-class [name attributes references]
+  {:name name
+   :attributes (into {} (map (fn [field] [(keyword field) {:name field :type "java.lang.String"}]) attributes))
+   :references (into {} (map (fn [[field type]] [(keyword field) {:name field :referencedType type}]) references))
+   :collections {}})
+
+(def genomic-model
+  {:name "genomic"
+   :classes {:Organism (model-class "Organism" ["name" "taxonId" "species" "shortName" "genus" "commonName"] {})
+             :SequenceFeature (model-class "SequenceFeature" ["id" "name" "primaryIdentifier" "symbol"]
+                                           {"chromosomeLocation" "Location" "organism" "Organism"})
+             :Location (model-class "Location" ["start" "end" "strand"] {"locatedOn" "Chromosome"})
+             :Chromosome (model-class "Chromosome" ["primaryIdentifier"] {"organism" "Organism"})}})
+
+(deftest capabilities-distinguish-api-and-metadata-states
+  (doseq [[version status] [[26 :unsupported-version] [27 :ready] [36 :ready]
+                            ["27" :ready] [nil :missing-version] ["" :missing-version]
+                            ["unknown" :invalid-version] [27.5 :invalid-version] [true :invalid-version]]]
+    (is (= status (:status (primary/capabilities (mine-db version employee-model) :a)))))
+  (is (= :missing-model (:status (primary/capabilities (mine-db 36 nil) :a))))
+  (is (= :missing-model (:status (primary/capabilities (mine-db 36 {:classes {}}) :a))))
+  (is (false? (:oauth? (primary/capabilities (mine-db 27 employee-model) :a))))
+  (is (true? (:oauth? (primary/capabilities (mine-db 36 employee-model) :a))))
+  (doseq [failed [:assets/fetch-model :assets/fetch-web-service-version]]
+    (is (= :metadata-failed (:status (primary/capabilities
+                                      (assoc-in (mine-db 36 employee-model) [:failed-assets :a] [failed]) :a))))))
+
+(deftest biological-capabilities-require-real-model-paths
+  (is (false? (:regions? (primary/capabilities (mine-db 36 employee-model) :a))))
+  (is (false? (:organisms? (primary/capabilities (mine-db 36 employee-model) :a))))
+  (is (true? (:regions? (primary/capabilities (mine-db 36 genomic-model) :a))))
+  (is (true? (:organisms? (primary/capabilities (mine-db 36 genomic-model) :a))))
+  (is (false? (:regions? (primary/capabilities
+                          (mine-db 36 (update-in genomic-model [:classes :Location :attributes] dissoc :start)) :a))))
+  (is (false? (:regions? (primary/capabilities (mine-db 26 genomic-model) :a)))))
+
+(deftest generic-mine-has-no-biological-network-requests
+  (run-test-sync
+   (reset! rf-db/app-db (assoc (mine-db 36 employee-model) :regions {:to-search "chr1:1..20"}))
+   (let [requests (atom [])]
+     (with-redefs [fetch/rows (fn [& args] (swap! requests conj args) ((utils/stub-fetch-fn {:results []})))
+                   fetch/records (fn [& args] (swap! requests conj args) ((utils/stub-fetch-fn {:results []})))]
+       (rf/dispatch [:cache/fetch-organisms])
+       (rf/dispatch [:regions/fetch-organisms])
+       (rf/dispatch [:regions/run-query])
+       (is (empty? @requests))))
+   (with-redefs [route/href (constantly "/a/querybuilder")]
+     (is (re-find #"Regions unavailable" (pr-str (primary/regions-unavailable-panel)))))))
+
+(deftest capabilities-follow-the-selected-mine
+  (run-test-sync
+   (reset! rf-db/app-db (-> (mine-db 36 genomic-model)
+                            (assoc-in [:assets :web-service-version :b] 27)
+                            (assoc-in [:mines :b :service :model] employee-model)))
+   (is (:regions? @(rf/subscribe [:primary-ui/capabilities])))
+   (swap! rf-db/app-db assoc :current-mine :b)
+   (is (false? (:regions? @(rf/subscribe [:primary-ui/capabilities]))))
+   (is (= :ready (:status @(rf/subscribe [:primary-ui/capabilities]))))))
+
+(deftest genomic-mine-fetches-organisms-and-ignores-stale-delivery
+  (run-test-sync
+   (reset! rf-db/app-db (mine-db 36 genomic-model))
+   (let [queries (atom [])]
+     (with-redefs [fetch/rows (fn [_ query & _]
+                                (swap! queries conj query)
+                                ((utils/stub-fetch-fn {:results []})))]
+       (rf/dispatch [:cache/fetch-organisms])
+       (rf/dispatch [:regions/fetch-organisms])
+       (is (= ["Organism" "Chromosome"] (mapv :from @queries)))))
+   (swap! rf-db/app-db assoc :current-mine :b :cache {} :regions {})
+   (rf/dispatch [:cache/store-organisms :a "https://a.example/mine" {:results [{:name "old"}]}])
+   (rf/dispatch [:regions/fetch-organisms-success :a "https://a.example/mine" {:results [["old"]]}])
+   (is (nil? (get-in @rf-db/app-db [:cache :organisms])))
+   (is (nil? (get-in @rf-db/app-db [:regions :organisms])))))

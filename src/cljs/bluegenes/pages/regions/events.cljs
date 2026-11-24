@@ -5,6 +5,7 @@
             [imcljs.save :as save]
             [clojure.string :as str]
             [bluegenes.route :as route]
+            [bluegenes.primary-ui :as primary]
             [bluegenes.pages.regions.utils :refer [bp->int strands-match?]]
             [bluegenes.pages.lists.utils :refer [copy-list-name]]))
 
@@ -176,37 +177,38 @@
 (reg-event-fx
  :regions/run-query
  (fn [{db :db} [_]]
-   (let [to-search (remove str/blank? (str/split-lines (get-in db [:regions :to-search])))
-         parsed-regions (mapv (partial parse-region
-                                       (select-keys (get-in db [:regions :settings])
-                                                    [:coordinates :strand-specific
-                                                     :extend-start :extend-end]))
-                              to-search)]
-     (if (some nil? parsed-regions)
-       (let [invalid-regions (remove nil? (map #(when (nil? %2) %1) to-search parsed-regions))]
-         {:db (assoc-in db [:regions :error] (str "Invalid regions: " (str/join ", " invalid-regions)))})
-       (let [feature-types (get-in db [:regions :settings :feature-types])
-             selected-feature-types (keep (fn [[feature-kw enabled?]]
-                                            (when enabled? (name feature-kw)))
-                                          feature-types)
-             selected-organism (get-in db [:regions :settings :organism :shortName])
-             query (-> (build-feature-query parsed-regions)
-                       (add-type-constraints selected-feature-types)
-                       (add-organism-constraint selected-organism))
-             subqueries (mapv (fn [region]
-                                (-> (build-feature-query region)
-                                    (add-type-constraints selected-feature-types)
-                                    (add-organism-constraint selected-organism)))
-                              parsed-regions)]
-         {:db (-> db
-                  (assoc-in [:regions :query] query)
-                  (assoc-in [:regions :subqueries] subqueries)
-                  (assoc-in [:regions :results] [])
-                  (assoc-in [:regions :loading] true)
-                  (assoc-in [:regions :error] nil))
-          :im-chan {:chan (fetch/records (get-in db [:mines (get db :current-mine) :service]) query)
-                    :on-success [:regions/save-results parsed-regions]
-                    :on-failure [:regions/query-failure]}})))))
+   (when (:regions? (primary/capabilities db (:current-mine db)))
+     (let [to-search (remove str/blank? (str/split-lines (get-in db [:regions :to-search])))
+           parsed-regions (mapv (partial parse-region
+                                         (select-keys (get-in db [:regions :settings])
+                                                      [:coordinates :strand-specific
+                                                       :extend-start :extend-end]))
+                                to-search)]
+       (if (some nil? parsed-regions)
+         (let [invalid-regions (remove nil? (map #(when (nil? %2) %1) to-search parsed-regions))]
+           {:db (assoc-in db [:regions :error] (str "Invalid regions: " (str/join ", " invalid-regions)))})
+         (let [feature-types (get-in db [:regions :settings :feature-types])
+               selected-feature-types (keep (fn [[feature-kw enabled?]]
+                                              (when enabled? (name feature-kw)))
+                                            feature-types)
+               selected-organism (get-in db [:regions :settings :organism :shortName])
+               query (-> (build-feature-query parsed-regions)
+                         (add-type-constraints selected-feature-types)
+                         (add-organism-constraint selected-organism))
+               subqueries (mapv (fn [region]
+                                  (-> (build-feature-query region)
+                                      (add-type-constraints selected-feature-types)
+                                      (add-organism-constraint selected-organism)))
+                                parsed-regions)]
+           {:db (-> db
+                    (assoc-in [:regions :query] query)
+                    (assoc-in [:regions :subqueries] subqueries)
+                    (assoc-in [:regions :results] [])
+                    (assoc-in [:regions :loading] true)
+                    (assoc-in [:regions :error] nil))
+            :im-chan {:chan (fetch/records (get-in db [:mines (get db :current-mine) :service]) query)
+                      :on-success [:regions/save-results parsed-regions]
+                      :on-failure [:regions/query-failure]}}))))))
 
 (reg-event-db
  :regions/set-highlight
@@ -288,13 +290,14 @@
 (reg-event-fx
  :regions/fetch-organisms
  (fn [{db :db} [_]]
-   (if (get-in db [:regions :organisms])
+   (if (or (not (:regions? (primary/capabilities db (:current-mine db))))
+           (get-in db [:regions :organisms]))
      {}
      (let [service (get-in db [:mines (:current-mine db) :service])
            q {:from "Chromosome"
               :select ["Chromosome.organism.shortName" "Chromosome.organism.name"]}]
        {:im-chan {:chan (fetch/rows service q)
-                  :on-success [:regions/fetch-organisms-success]}}))))
+                  :on-success [:regions/fetch-organisms-success (:current-mine db) (:root service)]}}))))
 ;; We don't need an on-failure here as the organism dropdown
 ;; will still work, just not show the subset we have chromosome data for.
 
@@ -312,11 +315,13 @@
 ;; This is only dispatched the first time visiting the regions page for a mine.
 (reg-event-db
  :regions/fetch-organisms-success
- (fn [db [_ res]]
-   (let [organisms (reduce into #{} (:results res))]
-     (-> db
-         (assoc-in [:regions :organisms] organisms)
-         (set-default-organism)))))
+ (fn [db [_ mine root res]]
+   (if (and (= mine (:current-mine db)) (= root (get-in db [:mines mine :service :root])))
+     (let [organisms (reduce into #{} (:results res))]
+       (-> db
+           (assoc-in [:regions :organisms] organisms)
+           (set-default-organism)))
+     db)))
 
 (reg-event-db
  :regions/clear-inputs

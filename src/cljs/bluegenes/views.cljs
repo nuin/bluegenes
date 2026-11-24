@@ -46,6 +46,7 @@
 
 (defn main-panel []
   (let [active-panel (subscribe [:active-panel])
+        capabilities (subscribe [:primary-ui/capabilities])
         query-error (subscribe [:primary-ui/query-error])
         main-color (subscribe [:branding/header-main])
         secondary-color (subscribe [:branding/header-secondary])
@@ -63,8 +64,9 @@
           [loader/mine-loader]
           [icons/icons]
           [nav/main]
-          [:main (if (and (= :querybuilder-panel @active-panel) @query-error)
-                   [primary/query-error-panel]
-                   [show-panel @active-panel])]
+          [:main (cond
+                   (not= :ready (:status @capabilities)) [primary/compatibility-panel @capabilities]
+                   (and (= :querybuilder-panel @active-panel) @query-error) [primary/query-error-panel]
+                   :else [show-panel @active-panel])]
           [footer/main]
           [alerts/main]])])))

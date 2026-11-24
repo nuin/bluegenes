@@ -247,8 +247,7 @@
       :controllers
       [{:parameters {:path [:mine]}
         :start (fn []
-                 (dispatch [:regions/fetch-organisms])
-                 (dispatch [:set-active-panel :regions-panel]))}]}]
+                 (dispatch [:set-active-panel :regions-panel nil [:regions/fetch-organisms]]))}]}]
     ["/lists"
      {:name ::lists
       :controllers

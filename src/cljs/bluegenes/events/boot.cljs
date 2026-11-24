@@ -82,7 +82,6 @@
  (fn [_ [_ & {:keys [failed-assets?]}]]
    {:dispatch-n
     [[::start-router]
-     [:verify-web-service-version]
      [:start-analytics]
      ;; Set a flag indicating all assets are fetched.
      [:finished-loading-assets]
@@ -228,6 +227,7 @@
               :profile)           ; All profile page data should be cleared.
       ;; Clear chosen template category as it may not be present in new mine.
       (update :home dissoc :active-template-category)
+      (update :cache dissoc :organisms)
       ;; Set lists page number back to 1.
       (assoc-in [:lists :pagination :current-page] 1)
       ;; Clear lists page selected lists.
@@ -281,20 +281,6 @@
        ;; Even if we're supposed to show a different panel, we'll show the
        ;; homepage instead on failed auth (navigation will be blocked).
        failed-auth? (assoc :dispatch [:do-active-panel :home-panel])))))
-
-(reg-event-fx
- :verify-web-service-version
- (fn [{db :db}]
-   (let [mine (get db :current-mine)
-         version (js/Number (get-in db [:assets :web-service-version mine]))]
-     (when (and (< version 26)
-                (not (zero? version)))
-                 ;; In case the web-service-version is an empty string
-       (js/alert
-        (str "You are using an outdated InterMine WebService version: "
-             version
-             ". Unexpected behaviour may occur. We recommend updating to version 26 or above."))))
-   {:db db}))
 
 (reg-event-fx
  :start-analytics

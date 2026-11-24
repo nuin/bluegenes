@@ -1,5 +1,6 @@
 (ns bluegenes.pages.regions.views
-  (:require [re-frame.core :refer [subscribe dispatch]]
+  (:require [bluegenes.primary-ui :as primary]
+            [re-frame.core :refer [subscribe dispatch]]
             [reagent.core :as reagent]
             [reagent.dom :as dom]
             [bluegenes.pages.regions.graphs :as graphs]
@@ -324,6 +325,8 @@
        [checkboxes to-search]])))
 
 (defn main []
-  [:div.container.regionsearch
-   [input-section]
-   [results-section]])
+  (if (:regions? @(subscribe [:primary-ui/capabilities]))
+    [:div.container.regionsearch
+     [input-section]
+     [results-section]]
+    (primary/regions-unavailable-panel)))

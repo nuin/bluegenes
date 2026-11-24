@@ -123,6 +123,7 @@
   (let [{:keys [error? thinking? message]} @(subscribe [:bluegenes.subs.auth/auth])
         current-mine @(subscribe [:current-mine])
         current-mine-name @(subscribe [:current-mine-name])
+        capabilities @(subscribe [:primary-ui/capabilities])
         oauth2-providers @(subscribe [:current-mine/oauth2-providers])
         {:keys [username password]} @credentials
         submit-fn #(dispatch [:bluegenes.events.auth/login username password])]
@@ -157,7 +158,10 @@
        :on-click #(do (dispatch [:bluegenes.events.auth/clear-error])
                       (on-register))}
       "Create new account"]
-     (when (= current-mine-name (read-default-ns))
+     (when (and (= current-mine-name (read-default-ns)) (seq oauth2-providers)
+                (not (:oauth? capabilities)))
+       [:p {:role "status"} "External sign-in requires API 36 or later. You can sign in with your mine account."])
+     (when (and (= current-mine-name (read-default-ns)) (:oauth? capabilities))
        [:div.oauth2-providers
         (when (contains? oauth2-providers "GOOGLE")
           [:button.btn
@@ -280,10 +284,10 @@
     {:class (classes :templates-panel large-screen?)}
     [:a {:href (route/href ::route/templates)}
      "Templates"]]
-   [:li.primary-nav
-    {:class (classes :regions-panel large-screen?)}
-    [:a {:href (route/href ::route/regions)}
-     "Regions"]]
+   (when (:regions? @(subscribe [:primary-ui/capabilities]))
+     [:li.primary-nav
+      {:class (classes :regions-panel large-screen?)}
+      [:a {:href (route/href ::route/regions)} "Regions"]])
    [:li.primary-nav
     {:class (classes :querybuilder-panel large-screen?)}
     [:a {:href (route/href ::route/querybuilder)}

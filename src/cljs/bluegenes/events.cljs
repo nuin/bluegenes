@@ -4,7 +4,7 @@
             [im-tables.events]
             [bluegenes.config :refer [server-vars]]
             [bluegenes.auth.storage :as storage]
-            [bluegenes.primary-ui]
+            [bluegenes.primary-ui :as primary]
             [bluegenes.events.boot]
             [bluegenes.events.auth]
             [bluegenes.events.registry]
@@ -216,35 +216,33 @@
 
 (reg-event-db
  :cache/store-organisms
- (fn [db [_ res]]
-   (assoc-in db [:cache :organisms] (:results res))))
+ (fn [db [_ mine root res]]
+   (if (and (= mine (:current-mine db)) (= root (get-in db [:mines mine :service :root])))
+     (assoc-in db [:cache :organisms] (:results res))
+     db)))
 
 (reg-event-fx
  :cache/fetch-organisms-failure
- (fn [{db :db} [_ retry-count res]]
-   (let [max-retries 5]
+ (fn [{db :db} [_ mine root retry-count res]]
+   (when (and (= mine (:current-mine db)) (= root (get-in db [:mines mine :service :root])))
      (cond-> {:log-error ["Failed query for organisms" res]}
-       (< retry-count max-retries)
+       (< retry-count 5)
        (assoc :dispatch-later
-              [{:ms (* 1000 (inc retry-count)) ; Exponential backoff
-                :dispatch [:cache/fetch-organisms (inc retry-count)]}])))))
+              [{:ms (* 1000 (inc retry-count))
+                :dispatch [:cache/fetch-organisms (inc retry-count) mine root]}])))))
 
 (reg-event-fx
  :cache/fetch-organisms
- (fn [{db :db} [_ retry-count]]
-   (let [service (get-in db [:mines (:current-mine db) :service])
-         q {:from "Organism"
-            :select ["name" "taxonId" "species" "shortName" "genus" "commonName"]}
-         max-retries 5
+ (fn [{db :db} [_ retry-count origin-mine origin-root]]
+   (let [mine (:current-mine db)
+         service (get-in db [:mines mine :service])
          current-retry (or retry-count 0)]
-     (if (contains? service :model)
-       {:im-chan {:chan (fetch/rows service q {:format "jsonobjects"})
-                  :on-success [:cache/store-organisms]
-                  :on-failure [:cache/fetch-organisms-failure current-retry]}}
-       ;; Retry in 1 second if model isn't available yet and we haven't exceeded max retries
-       (when (< current-retry max-retries)
-         {:dispatch-later [{:ms 1000
-                            :dispatch [:cache/fetch-organisms (inc current-retry)]}]})))))
+     (when (and (:organisms? (primary/capabilities db mine))
+                (or (nil? origin-mine) (and (= origin-mine mine) (= origin-root (:root service)))))
+       {:im-chan {:chan (fetch/rows service {:from "Organism" :select primary/organism-paths}
+                                    {:format "jsonobjects"})
+                  :on-success [:cache/store-organisms mine (:root service)]
+                  :on-failure [:cache/fetch-organisms-failure mine (:root service) current-retry]}}))))
 
 (reg-event-db
  :cache/store-possible-values
