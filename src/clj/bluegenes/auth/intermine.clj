@@ -32,7 +32,9 @@
                                      {:status 502 :kind :network}))))
         {:keys [status body]} response]
     (cond
-      (and (= 200 status) (map? (:output body))) (:output body)
+      (and (= 200 status) (map? (:output body))
+           (or (#{"prepare" "complete"} operation)
+               (true? (get-in body [:output :success])))) (:output body)
       (#{301 302 303 307 308 404 405} status)
       (throw (ex-info "OAuth requires a mine with service version 36 or newer"
                       {:status 400 :kind :unsupported}))

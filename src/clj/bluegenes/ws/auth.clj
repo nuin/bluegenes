@@ -92,15 +92,16 @@
 
 (defn logout [request]
   (let [{:keys [service mine-id]} (configured-mine (:params request))
-        context (transactions/context! request)]
+        context (transactions/logout-context! request)]
     (locking (:lock context)
-      (let [canceled? (try (transactions/invalidate! context mine-id) true (catch Exception _ false))
-            revoked? (try
+      (transactions/logout-context! request)
+      (let [revoked? (try
                        (when (:token service)
                          (http/with-middleware [#'http/wrap-request #'utils/wrap-timeout]
                            (im-auth/logout service)))
                        true
                        (catch Exception error (= 401 (:status (ex-data error)))))
+            canceled? (try (transactions/invalidate! context mine-id) true (catch Exception _ false))
             confirmed? (and canceled? revoked?)]
         (-> (response/ok (cond-> {:success true :revoked confirmed?}
                            (not confirmed?)
@@ -131,8 +132,9 @@
   (let [context (transactions/existing-context request)
         attempt (transactions/claim! context (:params request))]
     (transactions/finish! context attempt (:params request))
-    (-> (response/found (:mine-path attempt))
-        (assoc :session (with-meta (transactions/session request context) {:recreate true})))))
+    (let [session (transactions/callback-session request context attempt)]
+      (cond-> (response/found (:mine-path attempt))
+        session (assoc :session (with-meta session {:recreate true}))))))
 
 (defn- safe-error [error]
   (let [{:keys [status kind]} (ex-data error)

@@ -1,6 +1,6 @@
 (ns bluegenes.handler
-  (:require [bluegenes.routes :refer [routes]]
-            [ring.middleware.session :refer [wrap-session]]
+  (:require [bluegenes.routes :as routes]
+            [bluegenes.auth.session-store :as session-store]
             [ring.middleware.reload :refer [wrap-reload]]
             [compojure.middleware :refer [wrap-canonical-redirect]]
             [muuntaja.middleware :refer [wrap-format wrap-params]]
@@ -20,15 +20,15 @@
     uri))
 
 (defn make-handler []
-  (-> #'routes
+  (-> (routes/make-routes)
                  ;; Watch changes to the .clj and hot reload them
       (cond-> (:development env) (wrap-reload {:dirs ["src/clj"]}))
                  ;; Add session functionality
                  ;; SameSite CANNOT be Strict, as this would cause Firefox to
                  ;; NOT include the cookie when redirected back to Bluegenes
                  ;; from an OAuth2 provider.
-      (wrap-session {:cookie-attrs {:same-site :lax :http-only true
-                                    :secure (auth/secure-cookie?)}})
+      (session-store/wrap-session {:cookie-attrs {:same-site :lax :http-only true
+                                                  :secure (auth/secure-cookie?)}})
                  ;; Merges request :body-params into :params
       (wrap-params)
                  ;; Decodes requests and encodes responses based on headers.

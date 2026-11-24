@@ -3,6 +3,7 @@
             [clojure.string :as str]
             [bluegenes.auth.transactions :as transactions]
             [bluegenes.index :as index]
+            [ring.middleware.session :as session]
             [bluegenes.auth-http :refer [browser request! begin! authorization-params with-mine]]))
 
 (defn- callback! [browser state]
@@ -162,3 +163,60 @@
             (is (= 200 (:status (await! login)))))
           (finally (deliver (:release gate) true)))
         (is (= 200 (:status (await! logout))))))))
+
+(deftest delayed-page-cannot-resurrect-a-rotated-cookie
+  (with-mine [mine]
+    (let [current (browser)
+          state (get (authorization-params (begin! current mine)) "state")
+          old (atom @current)
+          gate (barrier)
+          render index/index
+          first? (atom true)]
+      (with-redefs [index/index (fn [init options]
+                                  (when (compare-and-set! first? true false)
+                                    (deliver (:entered gate) true)
+                                    (await! (:release gate)))
+                                  (render init options))]
+        (let [page (future (page! old))]
+          (try
+            (is (= true (await! (:entered gate))))
+            (is (= 302 (:status (callback! current state))))
+            (is (not= @old @current))
+            (finally (deliver (:release gate) true)))
+          (is (string? (await! page)))
+          (is (not (str/includes? (page! old) "issued-token-1")))
+          (is (str/includes? (page! current) "issued-token-1")))))))
+
+(deftest logout-with-a-cookie-in-flight-during-rotation-cancels-the-same-attempt
+  (with-mine [mine]
+    (let [current (browser)
+          state (get (authorization-params (begin! current mine)) "state")
+          overlapping (atom @current)]
+      (is (= 302 (:status (callback! current state))))
+      (is (= 200 (:status (account! overlapping mine "logout"))))
+      (is (= #{"issued-token-1"} (:revoked @(:counts mine))))
+      (is (not (str/includes? (page! current) "issued-token-1"))))))
+
+(deftest stale-callback-response-cannot-rotate-a-newer-session
+  (with-mine [mine]
+    (let [current (browser)
+          state (get (authorization-params (begin! current mine)) "state")
+          callback-browser (atom @current)
+          gate (barrier)
+          respond session/session-response]
+      (with-redefs [session/session-response
+                    (fn [response request options]
+                      (when (= "/bluegenes/api/auth/oauth2callback" (:uri request))
+                        (deliver (:entered gate) true)
+                        (await! (:release gate)))
+                      (respond response request options))]
+        (let [callback (future (callback! callback-browser state))]
+          (try
+            (is (= true (await! (:entered gate))))
+            (let [logout (future (account! current mine "logout"))]
+              (deliver (:release gate) true)
+              (is (= 200 (:status (await! logout)))))
+            (finally (deliver (:release gate) true)))
+          (is (= 302 (:status (await! callback))))
+          (is (not (str/includes? (page! callback-browser) "issued-token-1")))
+          (is (not (str/includes? (page! current) "issued-token-1"))))))))

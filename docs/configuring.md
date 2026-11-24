@@ -62,6 +62,18 @@ promise that a remote transfer was prevented after a network timeout. Superseded
 credentials are revoked individually; explicit account logout retains InterMine's
 account-wide temporary-token revocation behavior.
 
+Session rotation retires the previous cookie. For five minutes it can only cancel
+its original pending authentication generation; it cannot receive credentials or
+start another sign-in. Stale responses cannot restore a retired session. Session
+storage is bounded at 20,000 entries per process, including these short-lived
+retired keys.
+
+Browser logins are bound to their exact mine URL. Older saved logins without a
+recorded URL are discarded and require a new sign-in. Private lists and templates
+are fetched from the mine instead of being retained in the persistent boot cache;
+previously cached copies are removed during boot and logout.
+
+
 ### Analytics (optional)
 
 For now, the only supported statistics service is [Google analytics](https://analytics.google.com/). If you wish to use this service, configure your domain and then add your Google Analytics ID using the `GOOGLE_ANALYTICS` key listed above.

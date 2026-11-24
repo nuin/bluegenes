@@ -8,8 +8,11 @@
             [bluegenes.effects :as fx]
             [bluegenes.test-utils :as utils]
             [bluegenes.config :as config]
+            [bluegenes.utils :as bg-utils]
             [imcljs.fetch :as fetch]
-            [imcljs.auth :as im-auth]
+            [cljs-http.client :as http]
+            [bluegenes.pages.results.send-to-mine :as send-to-mine]
+            [bluegenes.auth.storage :as auth-storage]
             [cljs.core.async :refer [chan]]))
 
 (use-fixtures :each utils/fixtures)
@@ -130,7 +133,7 @@
                                             :auth-request {:mine "a" :root "https://a.example/mine"
                                                            :id "old-request"}})
                    fetch/session (fn [& _] (chan 1))
-                   im-auth/who-am-i? (fn [& _] (chan 1))]
+                   auth-storage/validate-token (fn [& _] (chan 1))]
        (rf/reg-fx :im-chan (fn [_]))
        (rf/dispatch [:authentication/init])
        (is (nil? (get-in @rf-db/app-db [:mines :a :auth :identity])))
@@ -144,7 +147,7 @@
      (rf/reg-fx :im-chan #(reset! pending %))
      (rf/dispatch [:save-login :a {:token "old-token"}])
      (with-redefs [config/init-vars (delay nil)
-                   im-auth/who-am-i? (fn [& _] (chan 1))]
+                   auth-storage/validate-token (fn [& _] (chan 1))]
        (rf/dispatch [:authentication/init])
        (let [validation @pending]
          (rf/dispatch [::auth/logout])
@@ -159,7 +162,7 @@
      (rf/reg-fx :im-chan #(reset! pending %))
      (rf/dispatch [:save-login :a {:token "account-a"}])
      (with-redefs [config/init-vars (delay nil)
-                   im-auth/who-am-i? (fn [& _] (chan 1))]
+                   auth-storage/validate-token (fn [& _] (chan 1))]
        (rf/dispatch [:authentication/init])
        (swap! rf-db/app-db assoc :current-mine :b)
        (complete! @pending :on-success {})
@@ -213,3 +216,117 @@
        (rf/dispatch [::auth/logout])
        (complete! request :on-success {:authorizationUrl "https://provider.example/late"})
        (is (nil? @redirect))))))
+
+(deftest persisted-login-is-bound-to-the-service-root
+  (run-test-sync
+   (setup!)
+   (rf/dispatch [:save-login :a {:token "private-token"}])
+   (swap! rf-db/app-db assoc-in [:mines :a :service]
+          {:root "https://replacement.example/mine"})
+   (let [calls (atom [])]
+     (rf/reg-fx :im-chan (fn [_]))
+     (with-redefs [config/init-vars (delay nil)
+                   http/get (fn [url options] (swap! calls conj [url options]) (chan 1))
+                   fetch/session (fn [_] (chan 1))]
+       (rf/dispatch [:authentication/init])
+       (is (empty? @calls))
+       (is (nil? (get-in @rf-db/app-db [:mines :a :auth :identity])))))))
+
+(deftest legacy-persisted-login-is-not-sent-to-an-unproven-root
+  (run-test-sync
+   (setup!)
+   (swap! utils/stubbed-storage assoc ":bluegenes/login" {:a {:token "legacy-token"}})
+   (swap! rf-db/app-db update-in [:mines :a :service] dissoc :token)
+   (let [calls (atom [])]
+     (rf/reg-fx :im-chan (fn [_]))
+     (with-redefs [config/init-vars (delay nil)
+                   http/get (fn [& args] (swap! calls conj args) (chan 1))
+                   fetch/session (fn [_] (chan 1))]
+       (rf/dispatch [:authentication/init])
+       (is (empty? @calls))))))
+
+(deftest send-to-mine-never-uses-a-token-from-another-root
+  (let [db (assoc-in initial-db [:env :mines :a :service :root] "https://replacement.example/mine")
+        old {:a {:token "private-token" :service-root "https://a.example/mine"}}]
+    (is (nil? (:token (send-to-mine/target-service db old :a))))
+    (is (nil? (:token (send-to-mine/target-service db {:a {:token "legacy"}} :a))))))
+
+(deftest token-validation-uses-only-the-authorization-header
+  (run-test-sync
+   (setup!)
+   (rf/dispatch [:save-login :a {:token "private-token"}])
+   (let [calls (atom [])]
+     (rf/reg-fx :im-chan (fn [_]))
+     (with-redefs [config/init-vars (delay nil)
+                   http/get (fn [url options] (swap! calls conj [url options]) (chan 1))]
+       (rf/dispatch [:authentication/init])
+       (is (= 1 (count @calls)))
+       (let [[url options] (first @calls)]
+         (is (= "https://a.example/mine/service/user" url))
+         (is (nil? (get-in options [:query-params :token])))
+         (is (= "Token private-token" (get-in options [:headers "Authorization"]))))))))
+
+(deftest logout-removes-private-assets-from-persistent-cache-immediately
+  (run-test-sync
+   (setup!)
+   (swap! utils/stubbed-storage assoc ":bluegenes/state" {:assets (:assets initial-db)})
+   (rf/dispatch [::auth/logout])
+   (let [assets (get-in @utils/stubbed-storage [":bluegenes/state" :assets])]
+     (is (nil? (:lists assets)))
+     (is (nil? (:templates assets))))))
+
+(deftest state-cache-never-saves-private-assets
+  (run-test-sync
+   (setup!)
+   (with-redefs [config/server-vars (delay {:version "test"})]
+     (rf/dispatch [:save-state]))
+   (let [assets (get-in @utils/stubbed-storage [":bluegenes/state" :assets])]
+     (is (nil? (:lists assets)))
+     (is (nil? (:templates assets))))))
+
+(deftest stale-list-and-template-401s-have-owned-handlers
+  (run-test-sync
+   (setup! false)
+   (let [pending (atom [])]
+     (rf/reg-fx :im-chan #(swap! pending conj %))
+     (with-redefs [fetch/lists (fn [& _] (chan 1)) fetch/templates (fn [& _] (chan 1))]
+       (rf/dispatch [:assets/fetch-lists])
+       (rf/dispatch [:assets/fetch-templates])
+       (swap! rf-db/app-db assoc :current-mine :b)
+       (doseq [request @pending]
+         (is (vector? (:on-unauthorised request)))
+         (when (:on-unauthorised request)
+           (complete! request :on-unauthorised {:status 401})))
+       (is (not (:invalid-token? @rf-db/app-db)))))))
+
+(deftest rejected-or-malformed-cleanup-shows-a-warning
+  (doseq [[kind result] [[:on-unauthorised {:status 404}]
+                         [:on-unauthorised {:status 401}]
+                         [:on-success {:success false}]]]
+    (run-test-sync
+     (let [requests (setup!)]
+       (rf/dispatch [::auth/login "first" "password"])
+       (let [old (last @requests)]
+         (rf/dispatch [::auth/logout])
+         (complete! old :on-success {:identity {:token "superseded-token"}})
+         (complete! (last @requests) kind result)
+         (is (some #(= "warning" (:style %)) (vals (:messages @rf-db/app-db)))))))))
+
+(deftest offline-boot-discards-private-assets-in-a-legacy-cache
+  (run-test-sync
+   (setup!)
+   (swap! utils/stubbed-storage assoc ":bluegenes/state"
+          {:version "test" :assets (:assets initial-db)})
+   (doseq [effect [:async-flow :mine-loader :forward-events]]
+     (rf/reg-fx effect (fn [_])))
+   (rf/reg-event-fx :authentication/init (fn [_ _] {}))
+   (with-redefs [config/init-vars (delay nil)
+                 config/server-vars (delay {:version "test" :hide-registry-mines true
+                                            :bluegenes-default-namespace "a"
+                                            :bluegenes-default-service-root "https://a.example/mine"})
+                 bg-utils/mine-from-pathname (constantly "a")]
+     (rf/dispatch [:boot])
+     (doseq [assets [(:assets @rf-db/app-db)
+                     (get-in @utils/stubbed-storage [":bluegenes/state" :assets])]]
+       (is (nil? (:lists assets)))
+       (is (nil? (:templates assets)))))))

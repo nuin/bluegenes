@@ -9,6 +9,10 @@
    (rf/->interceptor :id ::requests
                      :before #(assoc-in % [:coeffects :auth-requests]
                                         (get-in % [:coeffects :local-store])))
+   (rf/inject-cofx :local-store :bluegenes/state)
+   (rf/->interceptor :id ::cached-state
+                     :before #(assoc-in % [:coeffects :cached-state]
+                                        (get-in % [:coeffects :local-store])))
    (rf/inject-cofx :local-store :bluegenes/login)])
 
 (defn key-for [{:keys [mine root]}] [mine root])
@@ -33,10 +37,13 @@
     {::fx/http {:uri "/api/auth/revoke" :method :post
                 :transit-params {:mine-id (name mine) :service {:root root :token token}}
                 :on-success [::discarded]
-                :on-unauthorised [::discarded]
+                :on-unauthorised [::discard-failed]
                 :on-failure [::discard-failed]}}))
 
-(rf/reg-event-fx ::discarded (fn [_ _] {}))
+(rf/reg-event-fx ::discarded
+                 (fn [_ [_ response]]
+                   (when-not (true? (:success response))
+                     {:dispatch [::discard-failed]})))
 
 (rf/reg-event-fx
  ::discard-failed

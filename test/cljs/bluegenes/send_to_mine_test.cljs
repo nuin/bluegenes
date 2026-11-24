@@ -1,6 +1,7 @@
 (ns bluegenes.send-to-mine-test
   (:require [cljs.test :refer-macros [deftest is testing use-fixtures]]
             [bluegenes.test-utils :as utils :refer [stub-fetch-fn]]
+            [bluegenes.pages.results.events]
             [re-frame.core :as rf]
             [day8.re-frame.test :refer-macros [run-test-sync run-test-async wait-for]]
             [imcljs.fetch :as fetch]
@@ -109,7 +110,7 @@
 (deftest target-service-token
   (let [db {:env {:mines {:mouse {:service {:root "http://mouse.example"}}}}}]
     (is (= {:root "http://mouse.example" :token "t"}
-           (stm/target-service db {:mouse {:token "t"}} :mouse)))
+           (stm/target-service db {:mouse {:token "t" :service-root "http://mouse.example"}} :mouse)))
     (is (= {:root "http://mouse.example"}
            (stm/target-service db {:other {:token "t"}} :mouse))
         "login for another mine is not used")
@@ -147,9 +148,9 @@
    (utils/stub-local-storage)
    (let [calls (atom [])
          orig-rows fetch/rows]
-     (rf/dispatch-sync [:save-login :mouse {:token "mouse-token"}])
      (rf/dispatch-sync [::seed (assoc seeded-db :results
                                       {:send-to-mine {:open? true :list-source "L" :run 0}})])
+     (rf/dispatch-sync [:save-login :mouse {:token "mouse-token"}])
      (set! fetch/rows (fn [service query options]
                         (swap! calls conj [service query options])
                         ((stub-fetch-fn {:results [{:item "M. musculus" :count 2}

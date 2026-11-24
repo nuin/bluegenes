@@ -3,6 +3,7 @@
   (:require [re-frame.core :as re-frame :refer [reg-event-db reg-fx reg-event-fx dispatch subscribe inject-cofx]]
             [im-tables.events]
             [bluegenes.config :refer [server-vars]]
+            [bluegenes.auth.storage :as storage]
             [bluegenes.events.boot]
             [bluegenes.events.auth]
             [bluegenes.events.registry]
@@ -110,13 +111,15 @@
      ;; the next time the client boots to make sure the local storage data
      ;; and the client version number are aligned.
      {:persist [:bluegenes/state
-                (assoc saved-keys :version (:version @server-vars))]})))
+                (storage/public-cache (assoc saved-keys :version (:version @server-vars)))]})))
 
 (reg-event-fx
  :save-login
  [(inject-cofx :local-store :bluegenes/login)]
- (fn [{login :local-store} [_ mine-kw identity]]
-   {:persist [:bluegenes/login (assoc login mine-kw identity)]}))
+ (fn [{login :local-store db :db} [_ mine-kw identity]]
+   (let [root (or (get-in db [:env :mines mine-kw :service :root])
+                  (get-in db [:mines mine-kw :service :root]))]
+     {:persist [:bluegenes/login (assoc login mine-kw (storage/bound-login root identity))]})))
 
 (reg-event-fx
  :remove-login

@@ -34,6 +34,7 @@
       context)))
 
 (defn context! [request]
+  (when (get-in request [:session :retired-auth-context]) (throw (invalid-state)))
   (or (existing-context request)
       (locking (:contexts store)
         (swap! (:contexts store)
@@ -49,12 +50,27 @@
 (defn session [request context]
   (-> (:session request)
       (dissoc :identity :service :mine-id :redirect_uri)
-      (assoc :auth-context (:id context))))
+      (assoc :auth-context (:id context)
+             :auth-generation (:generation @(:data context)))))
+
+(defn logout-context! [request]
+  (if-let [id (get-in request [:session :retired-auth-context])]
+    (let [context (get @(:contexts store) id)]
+      (when-not (and context (= (get-in request [:session :auth-generation])
+                                (:generation @(:data context))))
+        (throw (invalid-state)))
+      context)
+    (context! request)))
 
 (defn- owned? [context attempt]
   (and (identical? context (get @(:contexts store) (:id context)))
        (= (:generation attempt) (:generation @(:data context)))
        (= (:handle attempt) (get-in @(:data context) [:attempt :handle]))))
+
+(defn callback-session [request context attempt]
+  (locking (:lock context)
+    (when (owned? context attempt)
+      (session request context))))
 
 (defn- reserve! [state expires]
   (locking (:active store)

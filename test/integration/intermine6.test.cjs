@@ -39,7 +39,14 @@ test('BlueGenes registration, login, lists and logout work with InterMine 6', as
       assert.equal((await api('lists', other.token)).lists.some(list => list.name === name), false);
       assert.notEqual((await api('user/preferences', other.token)).preferences.aka, preference);
     });
+    const secondSession = await api('session');
+    const secondLogin = await auth('login', secondSession.token, credentials);
     await auth('logout', identity.token);
+    const secondExpired = await fetch(`${mine}/service/user`, {
+      headers: { Authorization: `Token ${secondLogin.identity.token}` },
+      signal: AbortSignal.timeout(15000),
+    });
+    assert.equal(secondExpired.status, 401, 'Logout must also revoke the other account token');
     const expired = await fetch(`${mine}/service/user?${new URLSearchParams({ token: identity.token })}`,
       { signal: AbortSignal.timeout(15000) });
     assert.equal(expired.status, 401, 'Logout must invalidate the server-side API token');

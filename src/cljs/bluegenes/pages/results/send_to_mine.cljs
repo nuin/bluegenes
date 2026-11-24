@@ -10,6 +10,7 @@
             [imcljs.fetch :as fetch]
             [imcljs.save :as save]
             [bluegenes.route :as route]
+            [bluegenes.auth.storage :as storage]
             [bluegenes.pages.results.orthologs :as orthologs]
             [bluegenes.pages.lists.utils :refer [copy-list-name]]))
 
@@ -126,7 +127,7 @@
                  (get-in db [:mines mine-kw :service :root]))
         model-name (or (get-in db [:mines mine-kw :service :model :name])
                        (get-in db [:mines (:current-mine db) :service :model :name]))
-        token (get-in login [mine-kw :token])]
+        token (:token (storage/login-for-root login mine-kw root))]
     (cond-> {:root root}
       model-name (assoc :model {:name model-name})
       token (assoc :token token))))

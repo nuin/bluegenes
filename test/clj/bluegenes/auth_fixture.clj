@@ -86,14 +86,23 @@
                       "revoke" (do (swap! counts update :revoked conj (get params "token"))
                                    [200 {:output {:success true}}])
                       "login" [200 (output "password-token")]
-                      "logout" (do
+                      "logout" (if (contains? (:revoked @counts)
+                                             (or (get params "token")
+                                                 (some-> (.getFirst (.getRequestHeaders exchange)
+                                                                  "Authorization")
+                                                         (str/split #" " 2) second)))
+                                 [401 {:error "Invalid token"}]
+                                 (do
                                  (when-let [{:keys [entered release]} (:logout @controls)]
                                    (deliver entered true)
                                    (when (= ::timeout (deref release 5000 ::timeout))
                                      (throw (ex-info "Logout barrier expired" {}))))
-                                 [200 {:wasSuccessful true}])
+                                 (swap! counts update :account-logouts (fnil inc 0))
+                                 [200 {:wasSuccessful true}]))
                       "users" [200 {:user {:temporaryToken "registration-token"}}]
                       [404 {:error "Unsupported fixture endpoint"}])))
+                body (if-let [replacement (get-in @controls [:output operation])]
+                       {:output replacement} body)
                 bytes (.getBytes (json/generate-string body) StandardCharsets/UTF_8)]
             (.set (.getResponseHeaders exchange) "Content-Type" "application/json")
             (.sendResponseHeaders exchange status (alength bytes))

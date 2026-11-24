@@ -1,6 +1,7 @@
 (ns bluegenes.orthologs-test
   (:require [cljs.test :refer-macros [deftest is testing use-fixtures]]
             [bluegenes.test-utils :as utils :refer [stub-fetch-fn]]
+            [bluegenes.pages.results.events]
             [re-frame.core :as rf]
             [day8.re-frame.test :refer-macros [run-test-sync run-test-async wait-for]]
             [imcljs.fetch :as fetch]

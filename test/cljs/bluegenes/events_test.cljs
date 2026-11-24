@@ -7,7 +7,7 @@
             [bluegenes.events]
             [bluegenes.subs]
             [imcljs.fetch :as fetch]
-            [imcljs.auth :as auth]
+            [bluegenes.auth.storage :as auth]
             [bluegenes.config :as config]))
 
 (use-fixtures :each utils/fixtures)
@@ -15,8 +15,9 @@
 (deftest new-anonymous-token
   (run-test-async
    (utils/stub-local-storage)
+   (swap! rf-db/app-db assoc-in [:mines nil :service :root] "https://fixture.example/mine")
    (with-redefs [fetch/session  (utils/stub-fetch-fn "stubbed-token")
-                 auth/who-am-i? (utils/stub-fetch-fn {})
+                 auth/validate-token (utils/stub-fetch-fn {})
                  config/init-vars (delay nil)]
      (rf/dispatch-sync [:authentication/init])
      (wait-for [:authentication/store-token]
@@ -27,8 +28,9 @@
 (deftest reuse-anonymous-token
   (run-test-sync
    (utils/stub-local-storage)
+   (swap! rf-db/app-db assoc-in [:mines nil :service :root] "https://fixture.example/mine")
    (swap! rf-db/app-db assoc-in [:mines nil :service :token] "existing-token")
-   (with-redefs [auth/who-am-i? (utils/stub-fetch-fn {})
+   (with-redefs [auth/validate-token (utils/stub-fetch-fn {})
                  config/init-vars (delay nil)]
      (rf/dispatch [:authentication/init])
      (testing "reuse token when present"
@@ -38,11 +40,12 @@
 (deftest reuse-login-token
   (run-test-sync
    (utils/stub-local-storage)
+   (swap! rf-db/app-db assoc-in [:mines nil :service :root] "https://fixture.example/mine")
    ;; Starting the router causes a crash here, so change it to noop.
    (rf/reg-event-fx :bluegenes.events.boot/start-router (fn [] {}))
    (with-redefs [fetch/lists     (utils/stub-fetch-fn [])
                  fetch/templates (utils/stub-fetch-fn {})
-                 auth/who-am-i?  (utils/stub-fetch-fn {})
+                 auth/validate-token  (utils/stub-fetch-fn {})
                  config/init-vars (delay nil)]
      (swap! rf-db/app-db assoc-in [:mines nil :auth :identity] {:token "login-token"})
      (swap! rf-db/app-db assoc-in [:mines nil :service :token] "login-token")
@@ -54,8 +57,9 @@
 (deftest reuse-persisted-login-token
   (run-test-async
    (utils/stub-local-storage)
+   (swap! rf-db/app-db assoc-in [:mines nil :service :root] "https://fixture.example/mine")
    (rf/dispatch-sync [:save-login nil {:token "persisted-token"}])
-   (with-redefs [auth/who-am-i? (utils/stub-fetch-fn {})
+   (with-redefs [auth/validate-token (utils/stub-fetch-fn {})
                  config/init-vars (delay nil)]
      (rf/dispatch-sync [:authentication/init])
      (wait-for [:authentication/store-token]
@@ -66,10 +70,11 @@
 (deftest use-oauth2-token
   (run-test-async
    (utils/stub-local-storage)
-   (swap! utils/stubbed-storage assoc ":bluegenes/auth-requests" {[nil nil] "oauth-request"})
-   (with-redefs [auth/who-am-i? (utils/stub-fetch-fn {})
+   (swap! rf-db/app-db assoc-in [:mines nil :service :root] "https://fixture.example/mine")
+   (swap! utils/stubbed-storage assoc ":bluegenes/auth-requests" {[nil "https://fixture.example/mine"] "oauth-request"})
+   (with-redefs [auth/validate-token (utils/stub-fetch-fn {})
                  config/init-vars (delay {:identity {:token "oauth2-token"}
-                                          :auth-request {:mine nil :root nil :id "oauth-request"}})]
+                                          :auth-request {:mine nil :root "https://fixture.example/mine" :id "oauth-request"}})]
      (rf/dispatch-sync [:authentication/init])
      (wait-for [:authentication/store-token]
        (testing "use oauth2 token"
@@ -79,11 +84,12 @@
 (deftest replace-invalid-token
   (run-test-async
    (utils/stub-local-storage)
+   (swap! rf-db/app-db assoc-in [:mines nil :service :root] "https://fixture.example/mine")
    (let [orig-fn fetch/session]
      (set! fetch/session (utils/stub-fetch-fn "valid-token"))
      (swap! utils/stubbed-variables conj #(set! fetch/session orig-fn)))
    (swap! rf-db/app-db assoc-in [:mines nil :service :token] "invalid-token")
-   (with-redefs [auth/who-am-i? (utils/stub-fetch-fn {:statusCode 401})
+   (with-redefs [auth/validate-token (utils/stub-fetch-fn {:statusCode 401})
                  config/init-vars (delay nil)]
      (rf/dispatch-sync [:authentication/init])
      (wait-for [:authentication/store-token]
@@ -94,11 +100,12 @@
 (deftest clear-invalid-login-token
   (run-test-async
    (utils/stub-local-storage)
+   (swap! rf-db/app-db assoc-in [:mines nil :service :root] "https://fixture.example/mine")
    (let [orig-fn fetch/session]
      (set! fetch/session (utils/stub-fetch-fn "anon-token"))
      (swap! utils/stubbed-variables conj #(set! fetch/session orig-fn)))
    (rf/dispatch-sync [:save-login nil {:token "login-token"}])
-   (with-redefs [auth/who-am-i? (utils/stub-fetch-fn {:statusCode 401})
+   (with-redefs [auth/validate-token (utils/stub-fetch-fn {:statusCode 401})
                  config/init-vars (delay nil)]
      (rf/dispatch-sync [:authentication/init])
      (wait-for [:authentication/store-token]
@@ -115,14 +122,15 @@
 (deftest keep-login-on-failed-token-check
   (run-test-async
    (utils/stub-local-storage)
+   (swap! rf-db/app-db assoc-in [:mines nil :service :root] "https://fixture.example/mine")
    (rf/dispatch-sync [:save-login nil {:token "login-token"}])
-   (with-redefs [auth/who-am-i? (utils/stub-fetch-fn {:statusCode 500})
+   (with-redefs [auth/validate-token (utils/stub-fetch-fn {:statusCode 500})
                  config/init-vars (delay nil)]
      (rf/dispatch-sync [:authentication/init])
      (wait-for [:assets/failure]
        (testing "keep persisted login when token check fails without 401"
          (let [login (get @utils/stubbed-storage ":bluegenes/login")]
-           (is (= {nil {:token "login-token"}} login))))))))
+           (is (= {nil {:token "login-token" :service-root "https://fixture.example/mine"}} login))))))))
 
 (deftest clear-fetching-lists-on-failure
   (run-test-async

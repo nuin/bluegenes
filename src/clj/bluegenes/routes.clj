@@ -30,9 +30,8 @@
                 (response/content-type "text/html")
                 (response/charset "utf-8")
                 (assoc-in [:headers "Cache-Control"] "no-store"))
-      (or context (seq (:session request)))
-      (assoc :session (dissoc (if context (transactions/session request context)
-                                  (:session request)) :init)))))
+      (contains? (:session request) :init)
+      (assoc :session (dissoc (:session request) :init)))))
 
 (defn favicon-fallback []
   (found (str (:bluegenes-deploy-path env) "/favicon-fallback.ico")))
@@ -69,7 +68,7 @@
         [:a {:href bg-path} "Click here"] " to open BlueGenes."]]])))
 
 ; Define the top level URL routes for the server
-(def routes
+(defn make-routes []
   (compojure/let-routes [mines (env->mines env)
                          favicon* (atom nil)]
     (context (:bluegenes-deploy-path env) []
@@ -106,14 +105,14 @@
                                               (when-not (= path "query")
                                                 path))]]
                  (context (str "/" path) []
-                   (GET "/portal.do" {params :params}
+                   (GET "/portal.do" {params :params session :session}
                      (-> (found redirect-path)
-                         (assoc :session {:init {:linkIn {:target :upload
-                                                          :data params}}})))
-                   (POST "/portal.do" {params :params}
+                         (assoc :session (assoc session :init {:linkIn {:target :upload
+                                                                        :data params}}))))
+                   (POST "/portal.do" {params :params session :session}
                      (-> (see-other redirect-path)
-                         (assoc :session {:init {:linkIn {:target :upload
-                                                          :data params}}}))))))))
+                         (assoc :session (assoc session :init {:linkIn {:target :upload
+                                                                        :data params}})))))))))
 
       ;; Dynamic routes for handling permanent URL resolution on configured mines.
       (apply compojure/routes
@@ -141,3 +140,5 @@
         (partial with-init {})))
 
     (not-found not-found-page)))
+
+(def routes (make-routes))

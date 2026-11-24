@@ -2,14 +2,14 @@
   (:require [re-frame.core :refer [reg-event-db reg-event-fx inject-cofx reg-fx]]
             [bluegenes.db :as db]
             [imcljs.fetch :as fetch]
-            [imcljs.auth :as auth]
             [bluegenes.route :as route]
             [bluegenes.utils :as utils]
             [bluegenes.pages.lists.events :as lists]
             [bluegenes.config :refer [server-vars init-vars read-default-ns]]
             [clojure.string :as str]
             [bluegenes.events.auth :refer [renamedLists->message clear-private-assets]]
-            [bluegenes.auth.requests :as requests]))
+            [bluegenes.auth.requests :as requests]
+            [bluegenes.auth.storage :as storage]))
 
 (defn boot-flow
   "Produces a set of re-frame instructions that load all of InterMine's assets into BlueGenes
@@ -172,7 +172,7 @@
                      (cond->
                        init-events (assoc :dispatch-after-boot init-events)))
          ;; Load data previously persisted to local storage.
-         {:keys [assets version] :as state} (:local-store cofx)
+         {:keys [assets version] :as state} (storage/public-cache (:local-store cofx))
          db (cond-> init-db
               ;; Only use data from local storage if it's present and the
               ;; client version matches.
@@ -183,6 +183,7 @@
          wait-registry? (if no-registry? false (empty? mine))]
      (merge
       {:db db
+       :persist [:bluegenes/state state]
        ;; Start the timer for showing the loading dialog.
        :mine-loader true
        ;; Boot the application asynchronously
@@ -344,7 +345,7 @@
          fresh (requests/create db mine)
          request (assoc fresh :id (or (get auth-requests (requests/key-for fresh)) (:id fresh)))
          {:keys [identity renamedLists]} (oauth-handoff request auth-requests)
-         saved (get local-store mine)
+         saved (storage/login-for-root local-store mine (:root request))
          db (cond-> (requests/attach db request)
               (or identity saved) (assoc-in [:mines mine :auth :identity] (or identity saved)))
          auth-token (get-in db [:mines mine :auth :identity :token])
@@ -354,9 +355,11 @@
          binding (some-> (:auth-request @init-vars) (update :mine keyword))]
      (merge (when (and rejected binding) (requests/discard db binding (:token rejected)))
             {:db db
-             :persist (requests/persistence auth-requests request)
+             :persist-many [(requests/persistence auth-requests request)
+                            [:bluegenes/login (cond-> local-store
+                                                (nil? saved) (dissoc mine))]]
              :im-chan (if token
-                        {:chan (auth/who-am-i? service token)
+                        {:chan (storage/validate-token service token)
                          :on-success [:authentication/store-token request token identity renamedLists]
                          :on-unauthorised [:authentication/invalid-token request (boolean auth-token)]
                          :on-failure [:authentication/failure request evt]}
@@ -387,7 +390,7 @@
               :dispatch-n (cond-> []
                             (= mine (:current-mine db)) (conj [:authentication/ready])
                             (seq renamedLists) (conj (renamedLists->message renamedLists)))}
-       oauth-identity (assoc :persist [:bluegenes/login (assoc local-store mine oauth-identity)])
+       oauth-identity (assoc :persist [:bluegenes/login (assoc local-store mine (storage/bound-login (:root request) oauth-identity))])
        (nil? token) (assoc :dispatch [:messages/add
                                       {:markup "Could not acquire credentials. Please check the connection to the mine."
                                        :style "danger" :timeout 0}])))))
@@ -446,6 +449,12 @@
   (= service (select-keys (get-in db [:mines mine :service]) [:root :token])))
 
 (reg-event-fx
+ :assets/unauthorised-for-service
+ (fn [{:keys [db]} [_ mine service]]
+   (when (and (= mine (:current-mine db)) (current-service? db mine service))
+     {:dispatch [:flag-invalid-token]})))
+
+(reg-event-fx
  :assets/failure-for-service
  (fn [{:keys [db]} [_ mine service evt]]
    (when (and (= mine (:current-mine db)) (current-service? db mine service))
@@ -470,6 +479,7 @@
             (= mine (:current-mine db)) (assoc-in (concat lists/root [:fetching-lists?]) true))
       :im-chan {:chan (fetch/lists service {:showTags true})
                 :on-success [:assets/success-fetch-lists mine snapshot next-evt]
+                :on-unauthorised [:assets/unauthorised-for-service mine snapshot]
                 :on-failure [:assets/failure-for-service mine snapshot evt]}})))
 
 ; Fetch class keys
@@ -506,6 +516,7 @@
          snapshot (select-keys service [:root :token])]
      {:im-chan {:chan (fetch/templates service)
                 :on-success [:assets/success-fetch-templates mine snapshot next-evt]
+                :on-unauthorised [:assets/unauthorised-for-service mine snapshot]
                 :on-failure [:assets/failure-for-service mine snapshot evt]}})))
 
 ; Fetch summary fields

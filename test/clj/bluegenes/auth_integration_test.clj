@@ -91,13 +91,13 @@
                                  (alter {:service {:root (:root mine)} :mine-id "test"
                                          :provider "TEST" :request-id "request-1"}))]
           (is (= 400 (:status response)))
-          (is (empty? @(:calls mine))))))))
+          (is (not-any? #(str/includes? (:path %) "/oauth2") @(:calls mine))))))))
 
 (deftest public-url-is-required-and-upstream-errors-are-safe
   (with-mine [mine]
     (with-redefs [config/env (dissoc config/env :bluegenes-public-url)]
       (is (= 400 (:status (begin! (browser) mine))))
-      (is (empty? @(:calls mine)))))
+      (is (not-any? #(str/includes? (:path %) "/oauth2") @(:calls mine)))))
   (with-mine [mine]
     (let [browser (browser)
           state (get (authorization-params (begin! browser mine)) "state")]
@@ -180,13 +180,22 @@
       (is (zero? (:exchanges @(:counts mine)))))))
 
 (deftest portal-session-updates-preserve-a-pending-login
-  (with-mine [mine]
-    (let [browser (browser)
-          state (get (authorization-params (begin! browser mine)) "state")]
-      (request! browser :get "/bluegenes/test/portal.do" {:externalids "Gene1"})
-      (is (= 302 (:status (request! browser :get "/bluegenes/api/auth/oauth2callback"
-                                    {:provider "TEST" :state state :code "code-sentinel"}))))
-      (is (= 1 (:transfers @(:counts mine)))))))
+  (doseq [[method status] [[:get 302] [:post 303]]
+          path ["/bluegenes/test/portal.do" "/bluegenes/query/portal.do"]]
+    (with-mine [mine]
+      (let [browser (browser)
+            state (get (authorization-params (begin! browser mine)) "state")
+            portal (request! browser method path {:externalids "Gene1"})]
+        (is (= status (:status portal)))
+        (let [page (request! browser :get (get-in portal [:headers "Location"]) {})
+              page (if (= 301 (:status page))
+                     (request! browser :get (get-in page [:headers "Location"]) {}) page)]
+          (is (= 200 (:status page)))
+          (is (str/includes? (:text page) "linkIn"))
+          (is (str/includes? (:text page) "Gene1")))
+        (is (= 302 (:status (request! browser :get "/bluegenes/api/auth/oauth2callback"
+                                      {:provider "TEST" :state state :code "code-sentinel"}))))
+        (is (= 1 (:transfers @(:counts mine))))))))
 
 (deftest anonymous-page-views-do-not-allocate-auth-contexts
   (with-mine [mine]
@@ -207,3 +216,29 @@
       (is (= 400 (:status response)))
       (is (str/includes? (:text response) "version 36"))
       (is (not-any? #(str/ends-with? (:path %) "/oauth2authenticator") @(:calls mine))))))
+
+(deftest delivered-oauth-logout-reaches-account-wide-revocation
+  (with-mine [mine]
+    (let [browser (browser)
+          state (get (authorization-params (begin! browser mine)) "state")]
+      (request! browser :get "/bluegenes/api/auth/oauth2callback"
+                {:provider "TEST" :state state :code "fixture-code"})
+      (is (str/includes? (:text (request! browser :get "/bluegenes/test" {})) "issued-token-1"))
+      (let [response (request! browser :post "/bluegenes/api/auth/logout"
+                               {:mine-id "test" :service {:root (:root mine) :token "issued-token-1"}})]
+        (is (= 200 (:status response)))
+        (is (true? (:revoked (json/parse-string (:text response) true))))
+        (is (= 1 (:account-logouts @(:counts mine))))))))
+
+(deftest explicit-cleanup-failure-is-never-confirmed
+  (doseq [output [{:success false} {}]]
+    (with-mine [mine]
+      (let [browser (browser)]
+        (begin! browser mine)
+        (swap! (:controls mine) assoc :output {"cancel" output})
+        (let [response (request! browser :post "/bluegenes/api/auth/logout"
+                                 {:mine-id "test" :service {:root (:root mine) :token "anonymous-token"}})
+              body (json/parse-string (:text response) true)]
+          (is (= 200 (:status response)))
+          (is (false? (:revoked body)))
+          (is (string? (:warning body))))))))

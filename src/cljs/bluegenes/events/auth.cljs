@@ -4,7 +4,8 @@
             [bluegenes.route :as route]
             [imcljs.auth :as im-auth]
             [bluegenes.interceptors :refer [origin]]
-            [bluegenes.auth.requests :as requests]))
+            [bluegenes.auth.requests :as requests]
+            [bluegenes.auth.storage :as storage]))
 
 (defn slim-service
   "Constrains a service map to only the keys needed by the backend API."
@@ -59,7 +60,7 @@
                         (assoc-in [:mines mine :service :token] (:token identity))
                         (clear-private-assets mine))
               selected? route/force-controllers-rerun)
-        :persist [:bluegenes/login (assoc local-store mine identity)]
+        :persist [:bluegenes/login (assoc local-store mine (storage/bound-login (:root request) identity))]
         :dispatch-n (cond-> [[:assets/fetch-lists nil mine]
                              [:assets/fetch-templates nil mine]]
                       (seq renamedLists) (conj (renamedLists->message renamedLists))
@@ -75,7 +76,7 @@
 
 (reg-event-fx
  ::logout requests/interceptors
- (fn [{:keys [db auth-requests local-store]} _]
+ (fn [{:keys [db auth-requests local-store cached-state]} _]
    (let [mine (:current-mine db)
          request (requests/create db mine)]
      {:db (-> (requests/attach db request)
@@ -83,7 +84,8 @@
               (assoc-in [:mines mine :service :token] nil)
               (clear-private-assets mine))
       :persist-many [(requests/persistence auth-requests request)
-                     [:bluegenes/login (dissoc local-store mine)]]
+                     [:bluegenes/login (dissoc local-store mine)]
+                     [:bluegenes/state (storage/public-cache cached-state)]]
       ::fx/http {:uri "/api/auth/logout" :method :post
                  :on-success [::logout-success request]
                  :on-failure [::logout-success request]
