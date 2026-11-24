@@ -61,7 +61,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           repository: nuin/intermine
-          ref: fde56493d32054f2fa97b5dacdbddeaeac46685c
+          ref: 339371eaf061154a12369ef0f5f848356e1c4946
           path: intermine-core
       - uses: actions/setup-java@v6
         with:

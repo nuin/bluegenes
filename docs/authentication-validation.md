@@ -1,9 +1,11 @@
 # Java 21 authentication validation
 
 The paired CI workflow uses InterMine commit
-`fde56493d32054f2fa97b5dacdbddeaeac46685c`, which passed its
-[core and deployed-client workflow](https://github.com/nuin/intermine/actions/runs/45298956306)
-and [style gate](https://github.com/nuin/intermine/actions/runs/45298956447).
+`339371eaf061154a12369ef0f5f848356e1c4946`, including the final authentication
+review fixes. Its [hosted workflow](https://github.com/nuin/intermine/actions/runs/45448926936)
+and [style gate](https://github.com/nuin/intermine/actions/runs/45448926753)
+record the exact backend source. The paired workflow rebuilds this revision
+and runs the production BlueGenes browser and account checks against it.
 It provides service version 36 and the deferred OAuth transaction API.
 
 Local validation of the browser transaction and request-ownership changes:
@@ -14,6 +16,7 @@ Local validation of the browser transaction and request-ownership changes:
 | Full ClojureScript suite | 127 tests, 484 assertions passed |
 | Production browser navigation and login/logout | 2 tests passed |
 | Paired account, list, preference and isolation API checks | 2 tests passed |
+| Alliance tools | 89 passed; 2 optional live-mine checks skipped (fixture unreachable) |
 | Clojure formatting | All source files passed |
 | Aislop | 100; no errors or warnings; Clojure semantics unsupported |
 
