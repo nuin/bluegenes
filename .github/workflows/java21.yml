@@ -40,7 +40,7 @@ jobs:
 
   intermine6:
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 60
     services:
       postgres:
         image: postgres:18.7-bookworm
@@ -61,7 +61,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           repository: nuin/intermine
-          ref: 339371eaf061154a12369ef0f5f848356e1c4946
+          ref: 5d246cd54d4b6ab2810dcac8fc91ad9325c7ba94
           path: intermine-core
       - uses: actions/setup-java@v6
         with:

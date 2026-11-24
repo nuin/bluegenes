@@ -1,12 +1,13 @@
 # Java 21 authentication validation
 
 The paired CI workflow uses InterMine commit
-`339371eaf061154a12369ef0f5f848356e1c4946`, including the final authentication
-review fixes. Its [hosted workflow](https://github.com/nuin/intermine/actions/runs/45448926936)
-and [style gate](https://github.com/nuin/intermine/actions/runs/45448926753)
-record the exact backend source. The paired workflow rebuilds this revision
-and runs the production BlueGenes browser and account checks against it.
-It provides service version 36 and the deferred OAuth transaction API.
+`5d246cd54d4b6ab2810dcac8fc91ad9325c7ba94`, including the final authentication review fixes and
+checksum-pinned Solr downloads from Apache's primary CDN. The
+[backend commit](https://github.com/nuin/intermine/commit/5d246cd54d4b6ab2810dcac8fc91ad9325c7ba94)
+and the paired workflow's source summary identify the exact tested sources.
+The workflow rebuilds that backend and runs the production BlueGenes browser
+and account checks against it. It provides service version 36 and the deferred
+OAuth transaction API.
 
 Local validation of the browser transaction and request-ownership changes:
 
