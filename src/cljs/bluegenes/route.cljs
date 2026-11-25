@@ -39,14 +39,23 @@
 ;; Based on the official reitit frontend-re-frame example: (2019.06.18)
 ;; https://github.com/metosin/reitit/tree/master/examples/frontend-re-frame
 
+(defn destination
+  "Keep reserved path characters in query parameters so server reloads are valid."
+  [k params query]
+  (let [field (case k ::results :title ::template :template nil)
+        value (get params field)]
+    (if (and (string? value) (re-find #"[\\/%;]" value))
+      {:k (case k ::results ::named-results ::template ::templates)
+       :params (dissoc params field)
+       :query (assoc query field value)}
+      {:k k :params params :query query})))
+
 ;;; Events ;;;
 
 (reg-event-fx
  ::navigate
  (fn [{db :db} [_ route & [params query]]]
-   {::navigate! {:k route
-                 :query query
-                 :params (update params :mine #(or % (:current-mine db)))}}))
+   {::navigate! (destination route (update params :mine #(or % (:current-mine db))) query)}))
 
 (reg-event-fx
  ::go-back
@@ -92,8 +101,9 @@
   ([k params]
    (href k params nil))
   ([k params query]
-   (let [current-mine (subscribe [:current-mine-name])]
-     (rfe/href k (update params :mine #(or % @current-mine)) query))))
+   (let [current-mine (subscribe [:current-mine-name])
+         {:keys [k params query]} (destination k (update params :mine #(or % @current-mine)) query)]
+     (rfe/href k params query))))
 
 (defn force-controllers-rerun
   "Force controllers to rerun on the next router start or navigation, whichever
@@ -121,6 +131,25 @@
 ;; from the `:set-active-panel` event handler into a top-level `:controllers`
 ;; for all our routes. Doing this would fix the discrepancy we currently have
 ;; between `:set-active-panel` and the router events.
+(defn- valid-entry-name? [value]
+  (and (string? value) (not (str/blank? value)) (<= (count value) 1024)))
+
+(defn- invalid-entry [page kind]
+  (dispatch [:set-active-panel page])
+  (dispatch [:messages/add {:id ::invalid-entry :style "warning" :timeout 0
+                            :markup [:span (str "Invalid " kind " link. Check the resource name.")]}]))
+
+(defn- start-results [title]
+  (if (valid-entry-name? title)
+    (do
+      (dispatch [:results/clear])
+      (dispatch [:widgets/reset])
+      (dispatch [:clear-ids-tool-entity])
+      (dispatch [:viz/clear])
+      (dispatch [:set-active-panel :results-panel nil [:results/view-list title]])
+      (dispatch [:results/listen-im-table-changes]))
+    (invalid-entry :lists-panel "list")))
+
 (def routes
   [(str (:bluegenes-deploy-path @server-vars) "/")
    [":mine"
@@ -172,8 +201,13 @@
     ["/templates"
      {:name ::templates
       :controllers
-      [{:parameters {:path [:mine]}
-        :start #(dispatch [:set-active-panel :templates-panel])}]}]
+      [{:parameters {:path [:mine] :query [:template]}
+        :start (fn [{{:keys [template]} :query}]
+                 (cond
+                   (nil? template) (dispatch [:set-active-panel :templates-panel])
+                   (valid-entry-name? template) (dispatch [:template-chooser/open-template (keyword template)])
+                   :else (invalid-entry :templates-panel "template")))
+        :stop #(dispatch [:template-chooser/deselect-template])}]}]
     ["/templates/:template"
      {:name ::template
       :controllers
@@ -223,25 +257,18 @@
                  (dispatch [:set-active-panel :querybuilder-panel
                             nil
                             [:primary-ui/import-query mine query run]]))}]}]
+    ["/results"
+     {:name ::named-results
+      :controllers
+      [{:parameters {:path [:mine] :query [:title]}
+        :start (fn [{{:keys [title]} :query}] (start-results title))
+        :stop #(dispatch [:results/unlisten-im-table-changes])}]}]
     ["/results/:title"
      {:name ::results
       :controllers
       [{:parameters {:path [:mine :title]}
-        :start (fn [{{:keys [title]} :path}]
-                 ;; We have to clear the previous query and tools entity, as
-                 ;; otherwise we may show old results and tools from the
-                 ;; previous invocation. This way, we'll only show the new
-                 ;; results and tools once they're ready.
-                 (dispatch [:results/clear])
-                 (dispatch [:widgets/reset])
-                 (dispatch [:clear-ids-tool-entity])
-                 (dispatch [:viz/clear])
-                 (dispatch [:set-active-panel :results-panel
-                            nil
-                            [:results/view-list title]])
-                 (dispatch [:results/listen-im-table-changes]))
-        :stop (fn []
-                (dispatch [:results/unlisten-im-table-changes]))}]}]
+        :start (fn [{{:keys [title]} :path}] (start-results title))
+        :stop #(dispatch [:results/unlisten-im-table-changes])}]}]
     ["/regions"
      {:name ::regions
       :controllers

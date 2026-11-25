@@ -109,7 +109,7 @@
 
 (deftest capabilities-distinguish-api-and-metadata-states
   (doseq [[version status] [[26 :unsupported-version] [27 :ready] [36 :ready]
-                            ["27" :ready] [nil :missing-version] ["" :missing-version]
+                            ["27" :ready] ["36\n" :ready] [nil :missing-version] ["" :missing-version]
                             ["unknown" :invalid-version] [27.5 :invalid-version] [true :invalid-version]]]
     (is (= status (:status (primary/capabilities (mine-db version employee-model) :a)))))
   (is (= :missing-model (:status (primary/capabilities (mine-db 36 nil) :a))))
@@ -167,3 +167,12 @@
    (rf/dispatch [:regions/fetch-organisms-success :a "https://a.example/mine" {:results [["old"]]}])
    (is (nil? (get-in @rf-db/app-db [:cache :organisms])))
    (is (nil? (get-in @rf-db/app-db [:regions :organisms])))))
+
+(deftest reserved-names-use-query-entries-for-reload-safe-navigation
+  (doseq [name ["A/B β" "100%" "A;B" "A\\B"]]
+    (is (= {:k ::route/named-results :params {:mine :a} :query {:title name}}
+           (route/destination ::route/results {:mine :a :title name} nil)))
+    (is (= {:k ::route/templates :params {:mine :a} :query {:template name}}
+           (route/destination ::route/template {:mine :a :template name} nil))))
+  (is (= {:k ::route/results :params {:mine :a :title "simple"} :query nil}
+         (route/destination ::route/results {:mine :a :title "simple"} nil))))

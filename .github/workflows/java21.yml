@@ -61,7 +61,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           repository: nuin/intermine
-          ref: 5d246cd54d4b6ab2810dcac8fc91ad9325c7ba94
+          ref: 21fb2720956449c413d35911190ca4592e663ce4
           path: intermine-core
       - uses: actions/setup-java@v6
         with:
@@ -79,6 +79,7 @@ jobs:
         working-directory: intermine-core
         run: |
           set -euo pipefail
+          printf '\nbluegenes.primary.url=%s/intermine6\n' "$BLUEGENES_URL" >> config/testmodel.properties
           ./config/ci/init-solr.sh "$PWD"
           ./config/ci/init.sh "$PWD" "$(command -v python3)" ws none "$TESTMODEL_URL"
       - run: npm ci

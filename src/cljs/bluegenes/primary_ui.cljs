@@ -94,7 +94,8 @@
    "Chromosome.organism.shortName" "Chromosome.organism.name"])
 
 (defn capabilities [db mine]
-  (let [raw-version (get-in db [:assets :web-service-version mine])
+  (let [value (get-in db [:assets :web-service-version mine])
+        raw-version (if (string? value) (str/trim value) value)
         version (when (or (number? raw-version)
                           (and (string? raw-version) (re-matches #"[0-9]+" raw-version)))
                   (js/Number raw-version))
