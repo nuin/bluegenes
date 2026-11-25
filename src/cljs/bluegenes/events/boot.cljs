@@ -1,6 +1,7 @@
 (ns bluegenes.events.boot
   (:require [re-frame.core :refer [reg-event-db reg-event-fx inject-cofx reg-fx]]
             [bluegenes.db :as db]
+            [bluegenes.metadata :as metadata]
             [imcljs.fetch :as fetch]
             [bluegenes.route :as route]
             [bluegenes.utils :as utils]
@@ -224,6 +225,7 @@
               :invalid-token?     ; Clear invalid-token-alert.
               :failed-auth?       ; Clear flag for failing to auth with mine.
               :failed-assets      ; Failed asset events per mine, shown in one message.
+              :primary-ui/query-error :primary-ui/pending-query
               :profile)           ; All profile page data should be cleared.
       ;; Clear chosen template category as it may not be present in new mine.
       (update :home dissoc :active-template-category)
@@ -249,6 +251,7 @@
  :reboot
  (fn [{db :db}]
    {:db (-> (remove-stateful-keys-from-db db)
+            (route/force-controllers-rerun)
             (assoc :fetching-assets? true)
             (update :messages remove-assets-failure-messages))
     :dispatch [:authentication/init]
@@ -407,25 +410,28 @@
           (make-hierarchy)
           model-classes))
 
-(reg-event-db
+(defn- required-asset-ready [db mine evt]
+  (-> db
+      (update-in [:primary-ui/metadata-pending mine] disj evt)
+      (update-in [:failed-assets mine] #(vec (remove #{evt} %)))))
+
+(reg-event-fx
  :assets/success-fetch-model
- (fn [db [_ mine-kw model]]
-   ;; We used to remove empty classes (zero count) from the model here, but
-   ;; this turned out to be a very bad idea! This is because the model is used
-   ;; to parse paths into classes, which means it has to be complete. This also
-   ;; applies to the model hierarchy.
+ (fn [{db :db} [_ mine-kw model]]
    (let [default-object-types (vec (sort (preferred-fields model)))]
-     (-> db
-         (assoc-in [:mines mine-kw :service :model] model)
-         (assoc-in [:mines mine-kw :default-object-types] default-object-types)
-         (assoc-in [:idresolver :stage :options :type] (some-> default-object-types first name))
-         (assoc-in [:mines mine-kw :model-hier] (extends-hierarchy (:classes model)))))))
+     {:db (-> db
+              (assoc-in [:mines mine-kw :service :model] model)
+              (assoc-in [:mines mine-kw :default-object-types] default-object-types)
+              (assoc-in [:idresolver :stage :options :type] (some-> default-object-types first name))
+              (assoc-in [:mines mine-kw :model-hier] (extends-hierarchy (:classes model)))
+              (required-asset-ready mine-kw :assets/fetch-model))
+      :dispatch [:primary-ui/resume-query]})))
 
 (reg-event-fx
  :assets/fetch-model
  (fn [{db :db} [evt]]
-   {:db db
-    :im-chan {:chan (fetch/model (get-in db [:mines (:current-mine db) :service]))
+   {:db (update-in db [:primary-ui/metadata-pending (:current-mine db)] (fnil conj #{}) evt)
+    :im-chan {:chan (metadata/fetch-model (get-in db [:mines (:current-mine db) :service]))
               :on-success [:assets/success-fetch-model (:current-mine db)]
               :on-failure [:assets/failure evt]}}))
 
@@ -552,16 +558,20 @@
 (reg-event-fx
  :assets/fetch-web-service-version
  (fn [{db :db} [evt]]
-   {:im-chan
+   {:db (update-in db [:primary-ui/metadata-pending (:current-mine db)] (fnil conj #{}) evt)
+    :im-chan
     {:chan (fetch/version-web-service
             (get-in db [:mines (:current-mine db) :service]))
      :on-success [:assets/success-fetch-web-service-version (:current-mine db)]
      :on-failure [:assets/failure evt]}}))
 
-(reg-event-db
+(reg-event-fx
  :assets/success-fetch-web-service-version
- (fn [db [_ mine-kw version]]
-   (assoc-in db [:assets :web-service-version mine-kw] version)))
+ (fn [{db :db} [_ mine-kw version]]
+   {:db (-> db
+            (assoc-in [:assets :web-service-version mine-kw] version)
+            (required-asset-ready mine-kw :assets/fetch-web-service-version))
+    :dispatch [:primary-ui/resume-query]}))
 
 (reg-event-fx
  :assets/fetch-release-version

@@ -4,9 +4,11 @@
             [re-frame.core :as rf]
             [re-frame.db :as rf-db]
             [imcljs.fetch :as fetch]
+            [imcljs.query :as query]
             [bluegenes.route :as route]
             [bluegenes.events]
             [bluegenes.primary-ui :as primary]
+            [bluegenes.metadata :as metadata]
             [bluegenes.test-utils :as utils]))
 
 (use-fixtures :each utils/fixtures)
@@ -45,10 +47,12 @@
 
 (defn setup-query-entry! []
   (reset! rf-db/app-db {:current-mine :a
+                        :assets {:web-service-version {:a 36}}
+                        :current-route {:path "/a/querybuilder" :query-params {:query query-xml}}
                         :mines {:a {:service {:root "https://a.example/mine" :model employee-model}}
                                 :b {:service {:root "https://b.example/mine" :model employee-model}}}})
   (rf/reg-event-db :qb/load-query (fn [db [_ query]] (assoc db :opened-builder query)))
-  (rf/reg-event-db :results/history+ (fn [db [_ query]] (assoc db :opened-results query))))
+  (rf/reg-event-db :results/history+ (fn [db [_ query no-route?]] (assoc db :opened-results query :without-routing? no-route?))))
 
 (deftest query-entry-imports-to-builder-unless-run-is-explicit
   (run-test-sync
@@ -176,3 +180,64 @@
            (route/destination ::route/template {:mine :a :template name} nil))))
   (is (= {:k ::route/results :params {:mine :a :title "simple"} :query nil}
          (route/destination ::route/results {:mine :a :title "simple"} nil))))
+
+(deftest immediate-run-keeps-the-reproducible-query-url
+  (run-test-sync
+   (setup-query-entry!)
+   (rf/dispatch [:primary-ui/import-query "a" query-xml "true"])
+   (is (true? (:without-routing? @rf-db/app-db)))
+   (is (= :results-panel (:active-panel @rf-db/app-db)))))
+
+(deftest import-waits-for-required-metadata-and-resumes-on-success
+  (run-test-sync
+   (setup-query-entry!)
+   (swap! rf-db/app-db update-in [:mines :a :service] dissoc :model)
+   (rf/dispatch [:primary-ui/import-query "a" query-xml "true"])
+   (is (nil? (:opened-results @rf-db/app-db)))
+   (is (nil? (:primary-ui/query-error @rf-db/app-db)))
+   (rf/dispatch [:assets/success-fetch-model :a employee-model])
+   (is (= :a (get-in @rf-db/app-db [:opened-results :source])))))
+
+(deftest failed-or-refreshing-metadata-cannot-execute-a-cached-model
+  (doseq [metadata-state [{:failed-assets {:a [:assets/fetch-model]}}
+                          {:primary-ui/metadata-pending {:a #{:assets/fetch-model}}}]]
+    (run-test-sync
+     (setup-query-entry!)
+     (swap! rf-db/app-db merge metadata-state)
+     (rf/dispatch [:primary-ui/import-query "a" query-xml "true"])
+     (is (nil? (:opened-results @rf-db/app-db)))
+     (rf/dispatch [:assets/success-fetch-model :a employee-model])
+     (is (= :a (get-in @rf-db/app-db [:opened-results :source]))))))
+
+(deftest pending-import-is-discarded-after-navigation
+  (run-test-sync
+   (setup-query-entry!)
+   (swap! rf-db/app-db update-in [:mines :a :service] dissoc :model)
+   (rf/dispatch [:primary-ui/import-query "a" query-xml "true"])
+   (swap! rf-db/app-db assoc :current-route {:path "/a/lists" :query-params {}})
+   (rf/dispatch [:assets/success-fetch-model :a employee-model])
+   (is (nil? (:opened-results @rf-db/app-db)))
+   (is (nil? (:primary-ui/pending-query @rf-db/app-db)))))
+
+(deftest supported-xml-retains-join-and-sort-semantics-on-the-wire
+  (let [xml "<query model=\"genomic\" view=\"SequenceFeature.name SequenceFeature.organism.name\" sortOrder=\"SequenceFeature.name\"><join path=\"SequenceFeature.organism\" style=\"outer\"/></query>"
+        parsed (primary/parse-query genomic-model xml)
+        sent (query/->xml genomic-model parsed)]
+    (is (= ["SequenceFeature.organism"] (:joins parsed)))
+    (is (= [{:path "SequenceFeature.name" :direction "ASC"}] (:sortOrder parsed)))
+    (is (re-find #"style=\"OUTER\"" sent))
+    (is (re-find #"sortOrder=\"SequenceFeature.name ASC\"" sent))))
+
+(deftest unsupported-lossy-constraints-are-rejected-before-execution
+  (doseq [constraint ["<constraint path=\"Employee\" op=\"LOOKUP\" value=\"Neil\" extraValue=\"Human\"/>"
+                      "<constraint path=\"Employee.name\" op=\"=\" loopPath=\"Employee.name\"/>"
+                      "<constraint path=\"Employee\" op=\"IN\" ids=\"1,2\"/>"
+                      "<constraint path=\"Employee.name\" op=\"ONE OF\"><value>A &amp; B</value></constraint>"]]
+    (is (thrown? js/Error (primary/parse-query employee-model (str "<query view=\"Employee.name\">" constraint "</query>"))))))
+
+(deftest invalid-model-responses-become-visible-failures
+  (is (= employee-model (metadata/model-response {:status 200 :body (js/JSON.stringify (clj->js {:model employee-model}))})))
+  (doseq [response [{:status 200 :body "not JSON"} {:status 200 :body "{}"}
+                    {:status 200 :body "{\"model\":{\"classes\":{}}}"} {:status 0 :body ""}]]
+    (is (= 502 (:status (metadata/model-response response)))))
+  (is (= 503 (:status (metadata/model-response {:status 503 :body "not JSON"})))))

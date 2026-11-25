@@ -82,14 +82,19 @@ test('legacy browser entry links reach the primary UI and retain API access', as
   await expect(page).toHaveURL(`${root}/intermine6/results/Everyones-Favourite-Employees`);
   const main = page.getByRole('main');
   await expect(main).toContainText('Neil Godwin');
-  await main.locator('td a').filter({ hasText: 'Neil Godwin' }).first().hover();
-  const reportLink = main.locator('a[href*="/report/Employee/"]').first();
+  await main.locator('.im-table').hover({ position: { x: 1, y: 1 } });
+  const reportLink = main.locator('td [data-trigger="hover"] a').filter({ hasText: 'Neil Godwin' }).first();
+  await reportLink.hover();
+  await expect(reportLink).toHaveAttribute('href', /\/report\/[^/]+\/\d+$/);
   await expect(reportLink).toBeVisible();
   const reportPath = await reportLink.getAttribute('href');
   const id = reportPath.split('/').pop();
+  await reportLink.click();
+  await expect(page).toHaveURL(new URL(reportPath, root).href);
+  await expect(main.getByRole('heading', { level: 1 })).toContainText('Neil Godwin');
   await page.goto(`${mine}/report.do?id=${id}`);
-  await expect(page).toHaveURL(`${root}/intermine6/report/Employee/${id}`);
-  await expect(main.getByRole('heading', { level: 1 })).toContainText('Employee');
+  await expect(page).toHaveURL(new URL(reportPath, root).href);
+  await expect(main.getByRole('heading', { level: 1 })).toContainText('Neil Godwin');
   await page.goto(`${mine}/templates.do`);
   await expect(main).toContainText('Employee');
   const template = main.locator('.template[id]').first();
@@ -101,7 +106,7 @@ test('legacy browser entry links reach the primary UI and retain API access', as
 });
 
 test('linked queries survive redirects and reload with their constraints and ordering', async ({ page }) => {
-  const query = '<query model="testmodel" name="Linked employee" view="Employee.name" sortOrder="Employee.name DESC">'
+  const query = '<query model="testmodel" name="Everyones-Favourite-Employees" view="Employee.name" sortOrder="Employee.name DESC">'
     + '<constraint path="Employee.name" op="=" value="Neil Godwin"/></query>';
   await page.goto(`${mine}/loadQuery.do?${new URLSearchParams({ method: 'xml', query })}`);
   await expect(page).toHaveURL(new RegExp('/querybuilder\\?'));
@@ -116,6 +121,15 @@ test('linked queries survive redirects and reload with their constraints and ord
   await expect(page.getByRole('main').getByRole('heading', { name: 'Query Results', exact: true })).toBeVisible();
   await expect(page.getByRole('main')).toContainText('Neil Godwin');
   expect(queries.some(request => decodeURIComponent(request).includes('DESC'))).toBe(true);
+  const runUrl = page.url();
+  await page.reload();
+  await expect(page.getByRole('main')).toContainText('Neil Godwin');
+  await expect(page.getByRole('main')).not.toContainText('Bernd Stromberg');
+  const fresh = await page.context().newPage();
+  await fresh.goto(runUrl);
+  await expect(fresh.getByRole('main')).toContainText('Neil Godwin');
+  await expect(fresh.getByRole('main')).not.toContainText('Bernd Stromberg');
+  await fresh.close();
   await page.goto(`${root}/intermine6/querybuilder?query=${encodeURIComponent('<invalid/>')}&run=true`);
   await expect(page.getByRole('heading', { name: 'Query link unavailable', exact: true })).toBeVisible();
   await expect(page.getByRole('main')).not.toContainText('Neil Godwin');
@@ -149,4 +163,43 @@ test('unsupported API version stays visible and can be retried', async ({ page }
   await expect(page.getByRole('heading', { name: 'Mine unavailable', exact: true })).toHaveCount(0);
   await page.getByRole('navigation').getByRole('link', { name: 'Lists', exact: true }).click();
   await expect(page.getByRole('main').getByRole('heading', { name: 'Lists', exact: true })).toBeVisible();
+});
+
+test('query import resumes when required metadata arrives after an optional failure', async ({ page }) => {
+  let releaseModel;
+  const modelReady = new Promise(resolve => { releaseModel = resolve; });
+  await page.route(/\/service\/model(?:\?.*)?$/, async route => {
+    const response = await route.fetch();
+    await modelReady;
+    await route.fulfill({ response });
+  });
+  await page.route(/\/service\/version\/intermine(?:\?.*)?$/, async route => {
+    const response = await route.fetch();
+    await route.fulfill({ response, status: 503, body: 'Unavailable' });
+  });
+  const query = '<query view="Employee.name"><constraint path="Employee.name" op="=" value="Neil Godwin"/></query>';
+  try {
+    await page.goto(`${root}/intermine6/querybuilder?${new URLSearchParams({ query })}`);
+    await expect(page.getByRole('heading', { name: 'Mine unavailable', exact: true })).toBeVisible();
+    releaseModel();
+    await expect(page.getByRole('main')).toContainText('Neil Godwin');
+    await expect(page.getByRole('heading', { name: 'Query link unavailable', exact: true })).toHaveCount(0);
+  } finally {
+    releaseModel();
+  }
+});
+
+test('retry replays a linked query after the model endpoint recovers', async ({ page }) => {
+  const matcher = /\/service\/model(?:\?.*)?$/;
+  await page.route(matcher, async route => {
+    const response = await route.fetch();
+    await route.fulfill({ response, status: 503, body: 'Unavailable' });
+  });
+  const query = '<query view="Employee.name"><constraint path="Employee.name" op="=" value="Neil Godwin"/></query>';
+  await page.goto(`${root}/intermine6/querybuilder?${new URLSearchParams({ query })}`);
+  await expect(page.getByRole('heading', { name: 'Mine unavailable', exact: true })).toBeVisible();
+  await page.unroute(matcher);
+  await page.getByRole('button', { name: 'Try again', exact: true }).click();
+  await expect(page.getByRole('main')).toContainText('Neil Godwin');
+  await expect(page.getByRole('heading', { name: 'Query link unavailable', exact: true })).toHaveCount(0);
 });

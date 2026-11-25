@@ -139,15 +139,14 @@
   (dispatch [:messages/add {:id ::invalid-entry :style "warning" :timeout 0
                             :markup [:span (str "Invalid " kind " link. Check the resource name.")]}]))
 
+(defn result-panel-events [load-event]
+  [[:results/clear] [:widgets/reset] [:clear-ids-tool-entity] [:viz/clear]
+   [:set-active-panel :results-panel nil load-event]
+   [:results/listen-im-table-changes]])
+
 (defn- start-results [title]
   (if (valid-entry-name? title)
-    (do
-      (dispatch [:results/clear])
-      (dispatch [:widgets/reset])
-      (dispatch [:clear-ids-tool-entity])
-      (dispatch [:viz/clear])
-      (dispatch [:set-active-panel :results-panel nil [:results/view-list title]])
-      (dispatch [:results/listen-im-table-changes]))
+    (doseq [event (result-panel-events [:results/view-list title])] (dispatch event))
     (invalid-entry :lists-panel "list")))
 
 (def routes
@@ -256,7 +255,8 @@
         :start (fn [{{:keys [mine]} :path {:keys [query run]} :query}]
                  (dispatch [:set-active-panel :querybuilder-panel
                             nil
-                            [:primary-ui/import-query mine query run]]))}]}]
+                            [:primary-ui/import-query mine query run]]))
+        :stop #(dispatch [:results/unlisten-im-table-changes])}]}]
     ["/results"
      {:name ::named-results
       :controllers
